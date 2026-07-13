@@ -1,6 +1,6 @@
-# 东方财富 7x24 快讯 IntelliJ 插件
+# Finance 7x24 News IntelliJ Plugin
 
-在 IntelliJ IDEA 中查看东方财富 7x24 小时财经快讯。
+在 IntelliJ IDEA 中查看 7x24 小时财经快讯。
 
 ## 功能
 

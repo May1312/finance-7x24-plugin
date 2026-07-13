@@ -1,9 +1,11 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
-    <name>东方财富7x24快讯</name>
+    <name>Finance 7x24 News</name>
     <version>1.0.0</version>
     <vendor>ylplugin</vendor>
     <description><![CDATA[
+        Finance 7x24 News shows public financial news updates in IntelliJ IDEA with automatic and manual refresh support.
+        <br/><br/>
         在 IDEA 中查看公开财经快讯，支持自动刷新和手动刷新。
         <br/><br/>
         本插件为非官方插件，与东方财富信息股份有限公司及其关联公司无隶属、授权、认可或赞助关系。
@@ -16,6 +18,7 @@
         <toolWindow
                 id="EastMoneyKuaixun"
                 anchor="right"
+                icon="/icons/kuaixunToolWindow.svg"
                 factoryClass="com.ylplugin.eastmoney.kuaixun.KuaixunToolWindowFactory"/>
     </extensions>
 </idea-plugin>
