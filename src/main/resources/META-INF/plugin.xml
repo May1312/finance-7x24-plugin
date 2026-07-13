@@ -4,12 +4,13 @@
     <version>1.0.0</version>
     <vendor>ylplugin</vendor>
     <description><![CDATA[
-        Finance 7x24 News shows public financial news updates in IntelliJ IDEA with automatic and manual refresh support.
+        Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh, manual refresh, quote sorting, and fallback quote data sources.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯，支持自动刷新和手动刷新。
+        在 IDEA 中查看公开财经快讯和自选行情，支持股票、ETF、指数代码，支持自动刷新、手动刷新、右键删除和表格排序。
+        自选行情优先使用东方财富公开行情接口，并在请求失败时尝试腾讯财经和新浪财经公开行情接口。
         <br/><br/>
         本插件为非官方插件，与东方财富信息股份有限公司及其关联公司无隶属、授权、认可或赞助关系。
-        插件仅用于便捷查看公开财经资讯，不提供投资建议。
+        插件仅用于便捷查看公开财经资讯，不提供投资建议，行情数据可能存在延迟、遗漏或错误。
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

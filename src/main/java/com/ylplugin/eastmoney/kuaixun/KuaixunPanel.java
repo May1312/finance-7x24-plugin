@@ -27,6 +27,8 @@ public class KuaixunPanel extends JPanel {
         setLayout(new BorderLayout());
         setBorder(JBUI.Borders.empty(4));
 
+        JPanel newsPanel = new JPanel(new BorderLayout());
+
         newsList.setCellRenderer(new KuaixunCellRenderer());
         newsList.setFixedCellHeight(-1);
         newsList.setVisibleRowCount(20);
@@ -49,8 +51,13 @@ public class KuaixunPanel extends JPanel {
         topPanel.add(titlePanel, BorderLayout.CENTER);
         topPanel.add(refreshBtn, BorderLayout.EAST);
 
-        add(topPanel, BorderLayout.NORTH);
-        add(new JBScrollPane(newsList), BorderLayout.CENTER);
+        newsPanel.add(topPanel, BorderLayout.NORTH);
+        newsPanel.add(new JBScrollPane(newsList), BorderLayout.CENTER);
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("快讯", newsPanel);
+        tabs.addTab("自选", new WatchlistPanel(project));
+        add(tabs, BorderLayout.CENTER);
 
         refreshData();
         refreshTimer = new Timer(30000, e -> checkNewData());
