@@ -17,6 +17,8 @@ import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.time.LocalTime;
+import java.time.LocalDate;
+import java.time.DayOfWeek;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -95,7 +97,7 @@ public class WatchlistPanel extends JPanel {
         refreshTimer = new Timer(30000, e -> refreshQuotes());
         refreshTimer.start();
 
-        Timer initialRefreshTimer = new Timer(2000, e -> refreshQuotes());
+        Timer initialRefreshTimer = new Timer(2000, e -> refreshQuotes(true));
         initialRefreshTimer.setRepeats(false);
         initialRefreshTimer.start();
     }
@@ -134,17 +136,26 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void refreshQuotes() {
-        refreshQuotes(3);
+        refreshQuotes(false);
     }
 
-    private void refreshQuotes(int retriesLeft) {
+    private void refreshQuotes(boolean force) {
         List<String> codes = parseCodes();
         if (codes.isEmpty()) {
             tableModel.setRowCount(0);
             statusLabel.setText("请输入股票或 ETF 代码，例如 600519、510300、sh000001");
             return;
         }
-        statusLabel.setText("刷新中...");
+        if (!isMarketOpen() && !force) {
+            statusLabel.setText("闭市中，已暂停行情刷新");
+            return;
+        }
+        if (!isMarketOpen()) {
+            statusLabel.setText("闭市中，加载最近行情");
+        } else {
+            statusLabel.setText("刷新中...");
+        }
+        int retriesLeft = 3;
         new Thread(() -> {
             Exception lastException = null;
             for (int attempt = 0; attempt <= retriesLeft; attempt++) {
@@ -168,6 +179,17 @@ public class WatchlistPanel extends JPanel {
             Exception failure = lastException;
             SwingUtilities.invokeLater(() -> handleQuoteFailure(failure));
         }).start();
+    }
+
+    private boolean isMarketOpen() {
+        DayOfWeek dow = LocalDate.now().getDayOfWeek();
+        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) {
+            return false;
+        }
+        LocalTime now = LocalTime.now();
+        boolean morning = !now.isBefore(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(11, 30));
+        boolean afternoon = !now.isBefore(LocalTime.of(13, 0)) && now.isBefore(LocalTime.of(15, 0));
+        return morning || afternoon;
     }
 
     private void handleQuoteFailure(Exception e) {
