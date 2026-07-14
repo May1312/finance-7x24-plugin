@@ -30,7 +30,7 @@ public class WatchlistPanel extends JPanel {
     private final QuoteService quoteService = new QuoteService();
     private final JTextField codesField = new JTextField();
     private final JLabel statusLabel = new JLabel("输入股票或 ETF 代码，多个代码用逗号分隔");
-    private final DefaultTableModel tableModel = new DefaultTableModel(new Object[]{"代码", "名称", "最新价", "涨跌幅", "涨跌额"}, 0) {
+    private final DefaultTableModel tableModel = new DefaultTableModel(new Object[]{"代码", "名称", "最新价", "涨跌幅"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -84,6 +84,7 @@ public class WatchlistPanel extends JPanel {
         quoteTable.setIntercellSpacing(JBUI.emptySize());
         quoteTable.setDefaultRenderer(Object.class, new QuoteTableRenderer());
         quoteTable.setRowSorter(tableSorter);
+        setupTableWidths();
         setupTableSorting();
         centerTableHeader();
         installPopupMenu();
@@ -223,6 +224,17 @@ public class WatchlistPanel extends JPanel {
         });
     }
 
+    private void setupTableWidths() {
+        int[] minWidths = {JBUI.scale(15), JBUI.scale(15), JBUI.scale(15), JBUI.scale(15)};
+        int[] prefWidths = {JBUI.scale(90), JBUI.scale(220), JBUI.scale(90), JBUI.scale(100)};
+        javax.swing.table.TableColumnModel columnModel = quoteTable.getColumnModel();
+        for (int i = 0; i < columnModel.getColumnCount() && i < minWidths.length; i++) {
+            columnModel.getColumn(i).setMinWidth(minWidths[i]);
+            columnModel.getColumn(i).setPreferredWidth(prefWidths[i]);
+        }
+        quoteTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+    }
+
     private void centerTableHeader() {
         JTableHeader header = quoteTable.getTableHeader();
         DefaultTableCellRenderer renderer = (DefaultTableCellRenderer) header.getDefaultRenderer();
@@ -233,7 +245,6 @@ public class WatchlistPanel extends JPanel {
         Comparator<String> numericComparator = Comparator.comparingDouble(this::parseDisplayNumber);
         tableSorter.setComparator(2, numericComparator);
         tableSorter.setComparator(3, numericComparator);
-        tableSorter.setComparator(4, numericComparator);
 
         JTableHeader header = quoteTable.getTableHeader();
         header.addMouseListener(new MouseAdapter() {
@@ -292,8 +303,7 @@ public class WatchlistPanel extends JPanel {
                     item.getCode(),
                     item.getName(),
                     formatPrice(item.getPrice()),
-                    formatPercent(item.getChangePercent()),
-                    formatAmount(item.getChangeAmount())
+                    formatPercent(item.getChangePercent())
             });
         }
         statusLabel.setText("最后更新 " + LocalTime.now().format(timeFormatter)
@@ -307,10 +317,6 @@ public class WatchlistPanel extends JPanel {
 
     private String formatPercent(double value) {
         return String.format("%+.2f%%", value);
-    }
-
-    private String formatAmount(double value) {
-        return String.format("%+.3f", value);
     }
 
     private double parseDisplayNumber(String value) {
@@ -338,7 +344,7 @@ public class WatchlistPanel extends JPanel {
             }
 
             int modelColumn = table.convertColumnIndexToModel(column);
-            if (modelColumn < 2 || modelColumn > 4) {
+            if (modelColumn < 2 || modelColumn > 3) {
                 setForeground(table.getForeground());
                 return this;
             }

@@ -9,6 +9,7 @@ import com.intellij.util.ui.JBFont;
 import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
+import javax.swing.ScrollPaneConstants;
 import java.awt.*;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -60,7 +61,9 @@ public class KuaixunPanel extends JPanel {
         topPanel.add(statusLabel, BorderLayout.SOUTH);
 
         newsPanel.add(topPanel, BorderLayout.NORTH);
-        newsPanel.add(new JBScrollPane(newsList), BorderLayout.CENTER);
+        JBScrollPane newsScrollPane = new JBScrollPane(newsList);
+        newsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        newsPanel.add(newsScrollPane, BorderLayout.CENTER);
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("快讯", newsPanel);
@@ -195,8 +198,8 @@ public class KuaixunPanel extends JPanel {
             titleArea.setBackground(bg);
             digestArea.setBackground(bg);
 
-            int width = list.getWidth() - JBUI.scale(32);
-            if (width > 0) {
+            int width = list.getWidth() - JBUI.scale(32) - JBUI.scale(16);
+            if (width > JBUI.scale(10)) {
                 titleArea.setSize(width, Short.MAX_VALUE);
                 Dimension ts = titleArea.getPreferredSize();
                 ts.width = width;
