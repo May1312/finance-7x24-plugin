@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh, manual refresh, quote sorting, and fallback quote data sources.
@@ -14,6 +14,15 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+
+    <change-notes><![CDATA[
+        <ul>
+            <li>新增股票搜索：支持股票代码/名称搜索，ETF 结果带类型标签（ETF/SH/SZ）</li>
+            <li>底部指数栏样式优化：下拉选择框更紧凑、与主题协调</li>
+            <li>快讯列表优化：标题加粗高亮、长内容摘要完整展示、短内容更紧凑</li>
+            <li>自选股行情：统一涨跌颜色、收市后暂停刷新、工具栏图标着色</li>
+        </ul>
+    ]]></change-notes>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow
