@@ -31,6 +31,7 @@ public class WatchlistPanel extends JPanel {
     private static final String CODES_KEY = "eastmoney.7x24.watchlist.codes";
     private static final String SORT_COL_KEY = "eastmoney.7x24.watchlist.sortColumn";
     private static final String SORT_STATE_KEY = "eastmoney.7x24.watchlist.sortState";
+    private static final String INDEX_KEY = "eastmoney.7x24.watchlist.index";
     private static final String[] COLUMN_NAMES = {"代码", "名称", "最新价", "涨跌幅", "涨跌额"};
     private static final List<String> INDEX_CODES = List.of("sh000001", "sz399001", "sz399006");
     private static final String[] INDEX_NAMES = {"上证指数", "深证成指", "创业板指"};
@@ -64,6 +65,7 @@ public class WatchlistPanel extends JPanel {
         initTable();
         initBottomPanel();
         restoreSortState();
+        restoreIndexSelection();
 
         refreshTimer = new Timer(30000, e -> refreshQuotes(false));
         refreshTimer.start();
@@ -142,7 +144,10 @@ public class WatchlistPanel extends JPanel {
         bottomPanel.add(indexPanel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
 
-        indexCombo.addActionListener(e -> updateIndexDisplay());
+        indexCombo.addActionListener(e -> {
+            properties.setValue(INDEX_KEY, String.valueOf(indexCombo.getSelectedIndex()));
+            updateIndexDisplay();
+        });
     }
 
     private void updateIndexDisplay() {
@@ -410,6 +415,17 @@ public class WatchlistPanel extends JPanel {
                 sortState = state;
                 SortOrder order = state == 1 ? SortOrder.DESCENDING : SortOrder.ASCENDING;
                 tableSorter.setSortKeys(List.of(new RowSorter.SortKey(col, order)));
+            }
+        } catch (NumberFormatException ignored) {
+        }
+    }
+
+    private void restoreIndexSelection() {
+        String idxStr = properties.getValue(INDEX_KEY, "0");
+        try {
+            int idx = Integer.parseInt(idxStr);
+            if (idx >= 0 && idx < indexCombo.getItemCount()) {
+                indexCombo.setSelectedIndex(idx);
             }
         } catch (NumberFormatException ignored) {
         }
