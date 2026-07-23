@@ -174,16 +174,8 @@ public class KuaixunPanel extends JPanel {
             @Override
             protected void done() {
                 try {
-                    List<KuaixunItem> items = get();
-                    boolean hasNew = false;
-                    for (int i = items.size() - 1; i >= 0; i--) {
-                        KuaixunItem item = items.get(i);
-                        String id = item.getId();
-                        if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
-                            hasNew = true;
-                            break;
-                        }
-                    }
+                    final List<KuaixunItem> items = get();
+                    final boolean hasNew = determineHasNew(items);
                     SwingUtilities.invokeLater(() -> {
                         // 恢复卡片外观
                         for (int i = cardsPanel.getComponentCount() - 1; i >= 0; i--) {
@@ -259,6 +251,17 @@ public class KuaixunPanel extends JPanel {
                 countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
             }
         }).start();
+    }
+
+    private boolean determineHasNew(List<KuaixunItem> items) {
+        for (int i = items.size() - 1; i >= 0; i--) {
+            KuaixunItem item = items.get(i);
+            String id = item.getId();
+            if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private JPanel createCard(KuaixunItem item) {
