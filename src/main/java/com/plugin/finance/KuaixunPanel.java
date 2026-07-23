@@ -95,7 +95,7 @@ public class KuaixunPanel extends JPanel {
         if (countdownSeconds <= 0) {
             // 倒计时归零 → 触发自动刷新 + 重置倒计时
             countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
-            checkNewData();
+            doCheckNewData();
         }
         updateCountdownDisplay();
     }
@@ -151,6 +151,54 @@ public class KuaixunPanel extends JPanel {
         }).start();
     }
 
+    /** 使用 SwingWorker 做自动刷新检查 */
+    private void doCheckNewData() {
+        SwingWorker<List<KuaixunItem>, Void> worker = new SwingWorker<>() {
+            @Override
+            protected List<KuaixunItem> doInBackground() throws Exception {
+                return service.fetchPage(1);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    List<KuaixunItem> items = get();
+                    boolean hasNew = false;
+                    for (int i = items.size() - 1; i >= 0; i--) {
+                        KuaixunItem item = items.get(i);
+                        String id = item.getId();
+                        if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
+                            hasNew = true;
+                            break;
+                        }
+                    }
+                    if (hasNew) {
+                        for (int i = items.size() - 1; i >= 0; i--) {
+                            KuaixunItem item = items.get(i);
+                            String id = item.getId();
+                            if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
+                                knownIds.add(id);
+                                cardsPanel.add(createCard(item), 0);
+                                cardsPanel.add(Box.createVerticalStrut(JBUI.scale(4)), 1);
+                            }
+                        }
+                        cardsPanel.revalidate();
+                        cardsPanel.repaint();
+                        setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
+                    } else {
+                        setStatus("最后更新 " + LocalTime.now().format(timeFormatter) + " · 已是最新");
+                    }
+                } catch (Exception e) {
+                    setStatus("刷新失败，请稍后重试");
+                } finally {
+                    countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    /** 旧版手动刷新（保留兼容） */
     private void checkNewData() {
         new Thread(() -> {
             try {
@@ -164,7 +212,10 @@ public class KuaixunPanel extends JPanel {
                         break;
                     }
                 }
-                if (!hasNew) return;
+                if (!hasNew) {
+                    countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+                    return;
+                }
                 SwingUtilities.invokeLater(() -> {
                     for (int i = items.size() - 1; i >= 0; i--) {
                         KuaixunItem item = items.get(i);
@@ -179,7 +230,9 @@ public class KuaixunPanel extends JPanel {
                     cardsPanel.repaint();
                     setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
                 });
+                countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
             } catch (Exception ignored) {
+                countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
             }
         }).start();
     }
