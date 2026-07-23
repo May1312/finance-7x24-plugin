@@ -89,6 +89,14 @@ public class KuaixunPanel extends JPanel {
         super.removeNotify();
     }
 
+    @Override
+    public void addNotify() {
+        super.addNotify();
+        if (!autoRefreshTimer.isRunning()) {
+            autoRefreshTimer.start();
+        }
+    }
+
     /** 每秒执行一次：倒计时减1，归零时触发自动刷新 */
     private void tickAndAutoRefresh() {
         countdownSeconds--;

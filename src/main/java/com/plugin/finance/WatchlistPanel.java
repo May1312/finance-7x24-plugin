@@ -376,6 +376,14 @@ public class WatchlistPanel extends JPanel {
         super.removeNotify();
     }
 
+    @Override
+    public void addNotify() {
+        super.addNotify();
+        if (!autoRefreshTimer.isRunning()) {
+            autoRefreshTimer.start();
+        }
+    }
+
     private void setupTableWidths() {
         int[] prefWidths = {JBUI.scale(85), JBUI.scale(220), JBUI.scale(90), JBUI.scale(90), JBUI.scale(90)};
         var columnModel = quoteTable.getColumnModel();
