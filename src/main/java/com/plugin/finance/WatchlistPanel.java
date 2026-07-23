@@ -79,6 +79,11 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void tickAndAutoRefresh() {
+        if (!isMarketOpen()) {
+            autoRefreshTimer.stop();
+            statusLabel.setText("闭市中");
+            return;
+        }
         countdownSeconds--;
         if (countdownSeconds <= 0) {
             countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
