@@ -51,10 +51,14 @@ public class WatchlistPanel extends JPanel {
     private final JLabel indexValueLabel = new JLabel("", SwingConstants.CENTER);
     private final JLabel indexChangeLabel = new JLabel("", SwingConstants.CENTER);
 
-    private final javax.swing.Timer refreshTimer;
+    private final Timer autoRefreshTimer;
     private int sortedColumn = -1;
     private int sortState = 0;
     private List<QuoteItem> lastIndexData = new ArrayList<>();
+    private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+
+    private static final int REFRESH_INTERVAL_MS = 30000;
+    private static final int COUNTDOWN_STEP_MS = 1000;
 
     public WatchlistPanel(Project project) {
         properties = PropertiesComponent.getInstance(project);
@@ -67,12 +71,34 @@ public class WatchlistPanel extends JPanel {
         restoreSortState();
         restoreIndexSelection();
 
-        refreshTimer = new Timer(30000, e -> refreshQuotes(false));
-        refreshTimer.start();
+        // 统一用一个1秒tick的timer：倒计时+到0触发刷新
+        autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
+        
+        refreshQuotes(true);
+        autoRefreshTimer.start();
+    }
 
-        javax.swing.Timer initialRefresh = new javax.swing.Timer(2000, e -> refreshQuotes(true));
-        initialRefresh.setRepeats(false);
-        initialRefresh.start();
+    private void tickAndAutoRefresh() {
+        countdownSeconds--;
+        if (countdownSeconds <= 0) {
+            countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+            refreshQuotes(true);
+        }
+        updateCountdownDisplay();
+    }
+
+    /** 只更新状态栏右侧的倒计时文字 */
+    private void updateCountdownDisplay() {
+        String text = statusLabel.getText();
+        if (text.contains("下次刷新")) {
+            String prefix = text.substring(0, text.indexOf("下次刷新"));
+            statusLabel.setText(prefix + "下次刷新 " + countdownSeconds + "秒");
+        }
+    }
+
+    /** 设置状态栏（含倒计时后缀） */
+    private void setStatus(String baseText) {
+        statusLabel.setText(baseText + "    下次刷新 " + countdownSeconds + "秒");
     }
 
     private void initTopPanel() {
@@ -84,7 +110,7 @@ public class WatchlistPanel extends JPanel {
         JButton refreshButton = new JButton(IconLoader.getIcon("/icons/refresh.svg", WatchlistPanel.class));
         refreshButton.setToolTipText("刷新行情");
         refreshButton.setPreferredSize(JBUI.size(30, 28));
-        refreshButton.addActionListener(e -> refreshQuotes());
+        refreshButton.addActionListener(e -> refreshQuotes(true));
 
         JLabel titleLabel = new JLabel("自选行情");
         titleLabel.setFont(JBFont.label().asBold());
@@ -262,19 +288,20 @@ public class WatchlistPanel extends JPanel {
         List<String> codes = parseCodes();
         if (codes.isEmpty()) {
             tableModel.setRowCount(0);
-            statusLabel.setText("点击「添加」搜索股票");
+            setStatus("点击「添加」搜索股票");
             refreshIndexData(force);
             return;
         }
         if (!isMarketOpen() && !force) {
-            statusLabel.setText("闭市中，已暂停行情刷新");
+            setStatus("闭市中，已暂停行情刷新");
             return;
         }
         if (!isMarketOpen()) {
-            statusLabel.setText("闭市中，加载最近行情");
+            setStatus("闭市中，加载最近行情");
         } else {
-            statusLabel.setText("刷新中...");
+            setStatus("刷新中...");
         }
+        countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
 
         new Thread(() -> {
             Exception lastException = null;
@@ -289,7 +316,7 @@ public class WatchlistPanel extends JPanel {
                 } catch (Exception e) {
                     lastException = e;
                     if (attempt < 3) {
-                        SwingUtilities.invokeLater(() -> statusLabel.setText("行情加载中，正在重试..."));
+                        SwingUtilities.invokeLater(() -> setStatus("行情加载中，正在重试..."));
                     }
                     try { Thread.sleep(1500); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
@@ -300,9 +327,9 @@ public class WatchlistPanel extends JPanel {
             Exception failure = lastException;
             SwingUtilities.invokeLater(() -> {
                 if (tableModel.getRowCount() > 0) {
-                    statusLabel.setText("网络波动，显示上次行情");
+                    setStatus("网络波动，显示上次行情");
                 } else {
-                    statusLabel.setText("行情加载失败，请稍后重试");
+                    setStatus("行情加载失败，请稍后重试");
                 }
                 refreshIndexData(force);
             });
@@ -338,14 +365,14 @@ public class WatchlistPanel extends JPanel {
                     formatPrice(item.getChangeAmount())
             });
         }
-        statusLabel.setText("最后更新 " + LocalTime.now().format(timeFormatter)
-                + "    数据源：" + quoteService.getLastSource()
-                + "    每 30 秒自动刷新");
+        setStatus("最后更新 " + LocalTime.now().format(timeFormatter)
+                + "    数据源：" + quoteService.getLastSource());
+        countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     }
 
     @Override
     public void removeNotify() {
-        refreshTimer.stop();
+        autoRefreshTimer.stop();
         super.removeNotify();
     }
 
