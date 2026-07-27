@@ -26,6 +26,7 @@ public class KuaixunPanel extends JPanel {
     private int currentPage = 1;
     private final Set<String> knownIds = ConcurrentHashMap.newKeySet();
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+    private boolean isRefreshing = false;
 
     private static final int REFRESH_INTERVAL_MS = 30000;
     private static final int COUNTDOWN_STEP_MS = 1000;
@@ -99,6 +100,7 @@ public class KuaixunPanel extends JPanel {
 
     /** 每秒执行一次：倒计时减1，归零时触发自动刷新 */
     private void tickAndAutoRefresh() {
+        if (isRefreshing) return;
         countdownSeconds--;
         if (countdownSeconds <= 0) {
             // 倒计时归零 → 触发自动刷新 + 重置倒计时
@@ -119,12 +121,17 @@ public class KuaixunPanel extends JPanel {
         }
     }
 
-    /** 设置状态栏（含倒计时后缀） */
+    /** 设置状态栏（含倒计时后缀），刷新中时不显示倒计时 */
     private void setStatus(String baseText) {
-        statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
+        if (baseText.equals("刷新中...")) {
+            statusLabel.setText(baseText);
+        } else {
+            statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
+        }
     }
 
     private void refreshData() {
+        isRefreshing = true;
         knownIds.clear();
         countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
         currentPage = 1;
@@ -149,18 +156,23 @@ public class KuaixunPanel extends JPanel {
                     }
                     cardsPanel.revalidate();
                     cardsPanel.repaint();
-                    setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
+                    isRefreshing = false;
                     countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+                    setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
                 });
             } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> setStatus("加载失败，请稍后重试"));
-                countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+                SwingUtilities.invokeLater(() -> {
+                    isRefreshing = false;
+                    countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+                    setStatus("加载失败，请稍后重试");
+                });
             }
         }).start();
     }
 
     /** 使用 SwingWorker 做自动刷新检查 */
     private void doCheckNewData() {
+        isRefreshing = true;
         // 立即显示"刷新中..."状态，卡片半透明闪烁
         SwingUtilities.invokeLater(() -> {
             setStatus("刷新中...");
@@ -215,6 +227,7 @@ public class KuaixunPanel extends JPanel {
                         setStatus("刷新失败，请稍后重试");
                     });
                 } finally {
+                    isRefreshing = false;
                     countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
                 }
             }

@@ -56,6 +56,7 @@ public class WatchlistPanel extends JPanel {
     private int sortState = 0;
     private List<QuoteItem> lastIndexData = new ArrayList<>();
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
+    private boolean isRefreshing = false;
 
     private static final int REFRESH_INTERVAL_MS = 30000;
     private static final int COUNTDOWN_STEP_MS = 1000;
@@ -84,6 +85,7 @@ public class WatchlistPanel extends JPanel {
             statusLabel.setText("闭市中");
             return;
         }
+        if (isRefreshing) return;
         countdownSeconds--;
         if (countdownSeconds <= 0) {
             countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
@@ -101,9 +103,13 @@ public class WatchlistPanel extends JPanel {
         }
     }
 
-    /** 设置状态栏（含倒计时后缀） */
+    /** 设置状态栏（含倒计时后缀），刷新中时不显示倒计时 */
     private void setStatus(String baseText) {
-        statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
+        if (baseText.equals("刷新中...")) {
+            statusLabel.setText(baseText);
+        } else {
+            statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
+        }
     }
 
     private void initTopPanel() {
@@ -302,6 +308,7 @@ public class WatchlistPanel extends JPanel {
         if (marketClosed) {
             setStatus("闭市中");
         } else {
+            isRefreshing = true;
             setStatus("刷新中...");
         }
         countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
@@ -316,6 +323,7 @@ public class WatchlistPanel extends JPanel {
                         if (marketClosed) {
                             statusLabel.setText("闭市中 · 上次行情 " + LocalTime.now().format(timeFormatter));
                         }
+                        isRefreshing = false;
                         refreshIndexData(force);
                     });
                     return;
@@ -339,6 +347,7 @@ public class WatchlistPanel extends JPanel {
                 } else {
                     setStatus("闭市中");
                 }
+                isRefreshing = false;
                 refreshIndexData(force);
             });
         }).start();
