@@ -74,14 +74,32 @@ public class KuaixunPanel extends JPanel {
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("快讯", newsPanel);
-        tabs.addTab("自选", new WatchlistPanel(project));
+        WatchlistPanel watchlistPanel = new WatchlistPanel(project);
+        tabs.addTab("自选", watchlistPanel);
         add(tabs, BorderLayout.CENTER);
 
         // 统一用一个1秒tick的timer：倒计时+到0触发刷新，避免两个timer不同步
         autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
+
+        // 切换tab时控制对应面板的timer：只激活当前tab的计时
+        tabs.addChangeListener(e -> {
+            if (tabs.getSelectedIndex() == 0) {
+                // 切到快讯
+                if (!autoRefreshTimer.isRunning()) {
+                    autoRefreshTimer.start();
+                }
+                watchlistPanel.pauseTimer();
+            } else {
+                // 切到自选
+                autoRefreshTimer.stop();
+                watchlistPanel.resumeTimer();
+            }
+        });
         
         refreshData();
         autoRefreshTimer.start();
+        // 初始在快讯tab，暂停自选的timer
+        watchlistPanel.pauseTimer();
     }
 
     @Override

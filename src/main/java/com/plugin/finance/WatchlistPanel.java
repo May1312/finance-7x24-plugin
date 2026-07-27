@@ -387,6 +387,16 @@ public class WatchlistPanel extends JPanel {
         countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     }
 
+    public void pauseTimer() {
+        autoRefreshTimer.stop();
+    }
+
+    public void resumeTimer() {
+        if (!autoRefreshTimer.isRunning()) {
+            autoRefreshTimer.start();
+        }
+    }
+
     @Override
     public void removeNotify() {
         autoRefreshTimer.stop();
