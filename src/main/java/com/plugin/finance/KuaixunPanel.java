@@ -28,7 +28,7 @@ public class KuaixunPanel extends JPanel {
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     private boolean isRefreshing = false;
 
-    private static final int REFRESH_INTERVAL_MS = 30000;
+    private static final int REFRESH_INTERVAL_MS = 20000;
     private static final int COUNTDOWN_STEP_MS = 1000;
 
     public KuaixunPanel(Project project) {
