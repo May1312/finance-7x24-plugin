@@ -96,7 +96,6 @@ public class KuaixunPanel extends JPanel {
             }
         });
         
-        refreshData();
         autoRefreshTimer.start();
         // 初始在快讯tab，暂停自选的timer
         watchlistPanel.pauseTimer();
@@ -114,6 +113,7 @@ public class KuaixunPanel extends JPanel {
         if (!autoRefreshTimer.isRunning()) {
             autoRefreshTimer.start();
         }
+        refreshData();
     }
 
     /** 每秒执行一次：倒计时减1，归零时触发自动刷新 */

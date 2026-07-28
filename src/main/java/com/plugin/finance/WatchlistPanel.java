@@ -74,9 +74,6 @@ public class WatchlistPanel extends JPanel {
 
         // 统一用一个1秒tick的timer：倒计时+到0触发刷新
         autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
-        
-        refreshQuotes(true);
-        autoRefreshTimer.start();
     }
 
     private void tickAndAutoRefresh() {
@@ -409,6 +406,7 @@ public class WatchlistPanel extends JPanel {
         if (!autoRefreshTimer.isRunning()) {
             autoRefreshTimer.start();
         }
+        refreshQuotes(true);
     }
 
     private void setupTableWidths() {
