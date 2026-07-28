@@ -63,12 +63,15 @@ public class StockSearchService {
                         if (code.isEmpty() || name.isEmpty() || !code.matches("\\d{6}")) {
                             continue;
                         }
-                        if (!"AStock".equals(classify) && !"Fund".equals(classify)) {
+                        boolean isStock = "AStock".equals(classify);
+                        boolean isFund = "Fund".equals(classify);
+                        boolean isIndex = "Index".equals(classify);
+                        if (!isStock && !isFund && !isIndex) {
                             continue;
                         }
                         String type = "1".equals(mktNum) ? "sh" : "sz";
                         String fullCode = type + code;
-                        String typeLabel = "Fund".equals(classify) ? "ETF" : "";
+                        String typeLabel = isFund ? "ETF" : (isIndex ? "指数" : "");
                         if (!unique.containsKey(code)) {
                             unique.put(code, new StockSearchItem(fullCode, code, name, type, typeLabel));
                         }
