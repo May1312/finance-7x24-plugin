@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>1.0.5</version>
+    <version>1.0.6</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh, manual refresh, quote sorting, and fallback quote data sources.
@@ -17,11 +17,9 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>新增自动刷新动画：卡片 fade 渐隐效果 + 刷新中状态反馈</li>
-            <li>修复快讯自动刷新倒计时失效问题</li>
-            <li>修复工具窗口收起后再打开倒计时无法恢复的问题</li>
-            <li>闭市期间优化：停止自选栏倒计时、保持表格数据正常展示</li>
-            <li>状态栏倒计时样式微调</li>
+            <li>新增：搜索支持指数，添加指数时显示「指数」标签</li>
+            <li>新增：打开快讯/自选面板时自动刷新数据</li>
+            <li>快讯刷新间隔从 30 秒调整为 20 秒</li>
         </ul>
     ]]></change-notes>
 
