@@ -20,6 +20,7 @@ public class KuaixunPanel extends JPanel {
     private final Project project;
     private final JPanel cardsPanel = new JPanel();
     private final KuaixunService service = new KuaixunService();
+    private final JBScrollPane newsScrollPane = new JBScrollPane();
     private final JLabel statusLabel = new JLabel("正在加载 7x24 快讯...");
     private final Timer autoRefreshTimer;
     private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -68,9 +69,9 @@ public class KuaixunPanel extends JPanel {
         topPanel.add(statusLabel, BorderLayout.SOUTH);
 
         newsPanel.add(topPanel, BorderLayout.NORTH);
-        JBScrollPane newsScrollPane = new JBScrollPane(cardsPanel);
-        newsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        newsPanel.add(newsScrollPane, BorderLayout.CENTER);
+        this.newsScrollPane.setViewportView(cardsPanel);
+        this.newsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        newsPanel.add(this.newsScrollPane, BorderLayout.CENTER);
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("快讯", newsPanel);
@@ -224,17 +225,35 @@ public class KuaixunPanel extends JPanel {
                             }
                         }
                         if (hasNew) {
+                            // 保存当前滚动位置
+                            javax.swing.JViewport viewport = KuaixunPanel.this.newsScrollPane.getViewport();
+                            int savedVpY = viewport.getViewPosition().y;
+                            final List<javax.swing.JComponent> inserted = new java.util.ArrayList<>();
                             for (int i = items.size() - 1; i >= 0; i--) {
                                 KuaixunItem item = items.get(i);
                                 String id = item.getId();
                                 if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
                                     knownIds.add(id);
-                                    cardsPanel.add(createCard(item), 0);
+                                    javax.swing.JComponent card = createCard(item);
+                                    cardsPanel.add(card, 0);
+                                    inserted.add(0, card);
                                     cardsPanel.add(Box.createVerticalStrut(JBUI.scale(4)), 1);
                                 }
                             }
                             cardsPanel.revalidate();
-                            cardsPanel.repaint();
+                            // 等待布局完成后计算新卡片总高度，恢复滚动位置
+                            SwingUtilities.invokeLater(() -> {
+                                int insertedHeight = 0;
+                                for (javax.swing.JComponent c : inserted) {
+                                    insertedHeight += c.getHeight();
+                                }
+                                // 加入间距：每张卡片一个 spacer
+                                int spacerCount = inserted.size();
+                                insertedHeight += spacerCount * JBUI.scale(4);
+                                // 插入后所有内容下移了 insertedHeight 像素，滚动也要向下补偿
+                                viewport.setViewPosition(new java.awt.Point(0, savedVpY + insertedHeight));
+                                cardsPanel.repaint();
+                            });
                             setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
                         } else {
                             setStatus("最后更新 " + LocalTime.now().format(timeFormatter) + " · 已是最新");
@@ -272,17 +291,31 @@ public class KuaixunPanel extends JPanel {
                     return;
                 }
                 SwingUtilities.invokeLater(() -> {
+                    javax.swing.JViewport viewport = this.newsScrollPane.getViewport();
+                    int savedVpY = viewport.getViewPosition().y;
+                    final List<javax.swing.JComponent> inserted = new java.util.ArrayList<>();
                     for (int i = items.size() - 1; i >= 0; i--) {
                         KuaixunItem item = items.get(i);
                         String id = item.getId();
                         if (id != null && !id.isEmpty() && !knownIds.contains(id)) {
                             knownIds.add(id);
-                            cardsPanel.add(createCard(item), 0);
+                            javax.swing.JComponent card = createCard(item);
+                            cardsPanel.add(card, 0);
+                            inserted.add(0, card);
                             cardsPanel.add(Box.createVerticalStrut(JBUI.scale(4)), 1);
                         }
                     }
                     cardsPanel.revalidate();
-                    cardsPanel.repaint();
+                    SwingUtilities.invokeLater(() -> {
+                        int insertedHeight = 0;
+                        for (javax.swing.JComponent c : inserted) {
+                            insertedHeight += c.getHeight();
+                        }
+                        int spacerCount = inserted.size();
+                        insertedHeight += spacerCount * JBUI.scale(4);
+                        viewport.setViewPosition(new java.awt.Point(0, savedVpY + insertedHeight));
+                        cardsPanel.repaint();
+                    });
                     setStatus("最后更新 " + LocalTime.now().format(timeFormatter));
                 });
                 countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
