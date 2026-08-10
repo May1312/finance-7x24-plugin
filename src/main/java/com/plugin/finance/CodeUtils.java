@@ -32,4 +32,14 @@ public class CodeUtils {
 
         return null;
     }
+
+    /** 去除市场前缀，用于将用户存储代码与 QuoteItem.getCode() 匹配 */
+    public static String stripPrefix(String code) {
+        if (code == null) return null;
+        String c = code.trim().toLowerCase();
+        if (c.startsWith("sh") || c.startsWith("sz")) return c.substring(2);
+        if (c.startsWith("hk")) return c.substring(2);
+        if (c.startsWith("us")) return c.substring(2);
+        return c;
+    }
 }

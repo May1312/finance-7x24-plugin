@@ -25,8 +25,10 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -419,14 +421,19 @@ public class WatchlistPanel extends JPanel {
 
     private void refreshQuotes(boolean force) {
         List<String> codes = getFilteredCodes();
-        if (codes.isEmpty()) {
+        List<String> indexCodes = currentIndexCodes();
+
+        // 合并自选和大盘指数为一次请求，涨跌幅完全同步
+        Set<String> merged = new LinkedHashSet<>(codes);
+        merged.addAll(indexCodes);
+        List<String> fetchCodes = new ArrayList<>(merged);
+        if (fetchCodes.isEmpty()) {
             tableModel.setRowCount(0);
             setStatus(parseCodes().isEmpty() ? "点击「添加」搜索股票" : "当前市场无自选股");
-            refreshIndexData(force);
             return;
         }
 
-        boolean marketClosed = !marketOpenFor(codes);
+        boolean marketClosed = !marketOpenFor(fetchCodes);
         if (marketClosed) {
             setStatus("闭市中");
         } else {
@@ -439,14 +446,34 @@ public class WatchlistPanel extends JPanel {
             Exception lastException = null;
             for (int attempt = 0; attempt <= 3; attempt++) {
                 try {
-                    List<QuoteItem> items = quoteService.fetchQuotes(codes);
+                    List<QuoteItem> allItems = quoteService.fetchQuotes(fetchCodes);
                     SwingUtilities.invokeLater(() -> {
-                        updateTable(items);
+                        // 从合并结果中拆分出自选股和指数
+                        Map<String, QuoteItem> itemMap = new HashMap<>();
+                        for (QuoteItem item : allItems) {
+                            itemMap.put(CodeUtils.stripPrefix(item.getCode()), item);
+                        }
+
+                        // 自选股（按原始顺序）
+                        List<QuoteItem> filteredItems = new ArrayList<>();
+                        for (String code : codes) {
+                            QuoteItem item = itemMap.get(CodeUtils.stripPrefix(code));
+                            if (item != null) filteredItems.add(item);
+                        }
+                        updateTable(filteredItems);
+
+                        // 大盘指数
+                        lastIndexData.clear();
+                        for (String idxCode : indexCodes) {
+                            QuoteItem item = itemMap.get(CodeUtils.stripPrefix(idxCode));
+                            if (item != null) lastIndexData.add(item);
+                        }
+                        updateIndexDisplay();
+
                         if (marketClosed) {
                             statusLabel.setText("闭市中 · 上次行情 " + LocalTime.now().format(timeFormatter));
                         }
                         isRefreshing = false;
-                        refreshIndexData(force);
                     });
                     return;
                 } catch (Exception e) {
@@ -470,7 +497,6 @@ public class WatchlistPanel extends JPanel {
                     setStatus("闭市中");
                 }
                 isRefreshing = false;
-                refreshIndexData(force);
             });
         }).start();
     }
