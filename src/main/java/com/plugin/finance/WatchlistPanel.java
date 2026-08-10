@@ -157,6 +157,7 @@ public class WatchlistPanel extends JPanel {
 
         JPanel actionRow = new JPanel(new BorderLayout(8, 0));
         actionRow.add(titleLabel, BorderLayout.WEST);
+        actionRow.add(statusLabel, BorderLayout.CENTER);
         actionRow.add(rightPanel, BorderLayout.EAST);
 
         statusLabel.setFont(JBFont.small());
@@ -170,7 +171,6 @@ public class WatchlistPanel extends JPanel {
         JPanel filterRow = new JPanel(new BorderLayout());
         filterRow.add(filterTabPanel, BorderLayout.WEST);
         topPanel.add(filterRow, BorderLayout.CENTER);
-        topPanel.add(statusLabel, BorderLayout.SOUTH);
 
         add(topPanel, BorderLayout.NORTH);
     }
@@ -478,6 +478,9 @@ public class WatchlistPanel extends JPanel {
     private void refreshIndexData(boolean force) {
         List<String> indexCodes = currentIndexCodes();
         if (indexCodes.isEmpty()) {
+            return;
+        }
+        if (!force && !marketOpenFor(indexCodes)) {
             return;
         }
         new Thread(() -> {
