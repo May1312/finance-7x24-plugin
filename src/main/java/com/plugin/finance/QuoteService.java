@@ -141,7 +141,10 @@ public class QuoteService {
         }
 
         JsonObject json = doJsonRequest(String.format(EASTMONEY_API_URL, String.join(",", secIds)), REFERER_EASTMONEY);
-        JsonObject data = json.getAsJsonObject("data");
+        if (json == null) {
+            return map;
+        }
+        JsonObject data = json.has("data") && !json.get("data").isJsonNull() ? json.getAsJsonObject("data") : null;
         if (data == null) {
             return map;
         }
