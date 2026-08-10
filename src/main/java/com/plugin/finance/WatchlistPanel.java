@@ -589,7 +589,7 @@ public class WatchlistPanel extends JPanel {
                     formatPrice(item.getChangeAmount())
             });
         }
-        setStatus("就绪");
+        setStatus("");
         countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     }
 
