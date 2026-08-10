@@ -564,12 +564,27 @@ public class WatchlistPanel extends JPanel {
 
     private boolean isGoldOpen() {
         ZoneId sh = ZoneId.of("Asia/Shanghai");
-        DayOfWeek dow = LocalDate.now(sh).getDayOfWeek();
+        ZoneId london = ZoneId.of("Europe/London");
+        ZonedDateTime now = ZonedDateTime.now(sh);
+        DayOfWeek dow = now.getDayOfWeek();
+        LocalTime t = now.toLocalTime();
+        // 伦敦夏令时 → 北京时间 6:00 开盘/5:00 收盘
+        // 伦敦冬令时 → 北京时间 7:00 开盘/6:00 收盘
+        boolean dst = london.getRules().isDaylightSavings(now.toInstant());
+        LocalTime open = dst ? LocalTime.of(6, 0) : LocalTime.of(7, 0);
+        LocalTime close = dst ? LocalTime.of(5, 0) : LocalTime.of(6, 0);
+
         if (dow == DayOfWeek.SUNDAY) return false;
         if (dow == DayOfWeek.SATURDAY) {
-            return LocalTime.now(sh).isBefore(LocalTime.of(5, 0));
+            // 周六凌晨交易到 close 结束
+            return t.isBefore(close);
         }
-        return true;
+        if (dow == DayOfWeek.MONDAY) {
+            // 周一 open 开盘，之前闭市
+            return !t.isBefore(open);
+        }
+        // 周二~周五：open ~ 次日 close 交易，close ~ open 休市结算
+        return !t.isBefore(open) || t.isBefore(close);
     }
 
     private void updateTable(List<QuoteItem> items) {
