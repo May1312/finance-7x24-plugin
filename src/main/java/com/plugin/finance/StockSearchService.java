@@ -1,5 +1,6 @@
 package com.plugin.finance;
 
+import com.intellij.openapi.diagnostic.Logger;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -17,14 +18,24 @@ import java.util.List;
 
 public class StockSearchService {
 
+    private static final Logger LOG = Logger.getInstance(StockSearchService.class);
+
     private static final String SEARCH_API = "https://searchadapter.eastmoney.com/api/suggest/get?input=%s&type=14&count=20&token=D43BF722C8E33BDC906FB84D85E326E8";
 
     public List<StockSearchItem> search(String keyword) {
         if (keyword == null || keyword.trim().isEmpty()) {
             return new ArrayList<>();
         }
+        String trimmed = keyword.trim();
+        List<StockSearchItem> results = new ArrayList<>();
+
+        // 内置黄金/贵金属品种（有行情源），混入搜索结果
+        for (GoldInstrument g : GoldInstrument.matchInstruments(trimmed)) {
+            results.add(new StockSearchItem(g.getCode(), g.getCode(), g.getDisplayName(), "GOLD", "黄金"));
+        }
+
         try {
-            String urlStr = String.format(SEARCH_API, URLEncoder.encode(keyword.trim(), "UTF-8"));
+            String urlStr = String.format(SEARCH_API, URLEncoder.encode(trimmed, "UTF-8"));
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
@@ -35,7 +46,7 @@ public class StockSearchService {
 
             int responseCode = conn.getResponseCode();
             if (responseCode < 200 || responseCode >= 300) {
-                return new ArrayList<>();
+                return results;
             }
 
             StringBuilder sb = new StringBuilder();
@@ -54,34 +65,64 @@ public class StockSearchService {
                 if (table.has("Data")) {
                     JsonArray data = table.getAsJsonArray("Data");
                     LinkedHashMap<String, StockSearchItem> unique = new LinkedHashMap<>();
+                    for (StockSearchItem r : results) {
+                        unique.put(r.getFullCode(), r);
+                    }
                     for (JsonElement element : data) {
                         JsonObject item = element.getAsJsonObject();
                         String code = getString(item, "Code");
                         String name = getString(item, "Name");
                         String classify = getString(item, "Classify");
                         String mktNum = getString(item, "MktNum");
-                        if (code.isEmpty() || name.isEmpty() || !code.matches("\\d{6}")) {
+                        if (code.isEmpty() || name.isEmpty()) {
                             continue;
                         }
-                        boolean isStock = "AStock".equals(classify);
-                        boolean isFund = "Fund".equals(classify);
-                        boolean isIndex = "Index".equals(classify);
-                        if (!isStock && !isFund && !isIndex) {
-                            continue;
+
+                        String fullCode;
+                        String market;
+                        String typeLabel;
+                        if ("UsStock".equals(classify)) {
+                            // 美股
+                            if (!code.matches("[A-Za-z0-9.]+")) {
+                                continue;
+                            }
+                            fullCode = "us" + code.toUpperCase();
+                            market = "US";
+                            typeLabel = "";
+                        } else if ("HK".equals(classify)) {
+                            // 港股
+                            if (!code.matches("\\d{5,6}")) {
+                                continue;
+                            }
+                            fullCode = "hk" + code;
+                            market = "HK";
+                            typeLabel = "";
+                        } else {
+                            // A股 / 基金 / 指数
+                            boolean isStock = "AStock".equals(classify);
+                            boolean isFund = "Fund".equals(classify);
+                            boolean isIndex = "Index".equals(classify);
+                            if (!isStock && !isFund && !isIndex) {
+                                continue;
+                            }
+                            if (!code.matches("\\d{6}")) {
+                                continue;
+                            }
+                            market = "1".equals(mktNum) ? "sh" : "sz";
+                            fullCode = market + code;
+                            typeLabel = isFund ? "ETF" : (isIndex ? "指数" : "");
                         }
-                        String type = "1".equals(mktNum) ? "sh" : "sz";
-                        String fullCode = type + code;
-                        String typeLabel = isFund ? "ETF" : (isIndex ? "指数" : "");
-                        if (!unique.containsKey(code)) {
-                            unique.put(code, new StockSearchItem(fullCode, code, name, type, typeLabel));
+                        if (!unique.containsKey(fullCode)) {
+                            unique.put(fullCode, new StockSearchItem(fullCode, code, name, market, typeLabel));
                         }
                     }
-                    return new ArrayList<>(unique.values());
+                    results = new ArrayList<>(unique.values());
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            LOG.warn("Search failed for keyword: " + trimmed, e);
         }
-        return new ArrayList<>();
+        return results;
     }
 
     private String getString(JsonObject obj, String key) {

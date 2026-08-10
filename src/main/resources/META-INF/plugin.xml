@@ -1,12 +1,12 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>1.0.7</version>
+    <version>1.0.8</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh, manual refresh, quote sorting, and fallback quote data sources.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯和自选行情，支持股票、ETF、指数代码，支持自动刷新、手动刷新、右键删除和表格排序。
+        在 IDEA 中查看公开财经快讯和自选行情，支持 A股、港股、美股、国际金价（伦敦金），支持市场筛选、自动刷新、手动刷新、右键删除和表格排序。
         自选行情优先使用公开行情接口，并在请求失败时尝试腾讯财经和新浪财经公开行情接口。
         <br/><br/>
         本插件为非官方插件，与相关数据服务商及其关联公司无隶属、授权、认可或赞助关系。
@@ -17,10 +17,10 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>修复：快讯自动刷新插入新消息时列表跳回顶部，改为保持当前滚动位置</li>
-            <li>新增：搜索支持指数，添加指数时显示「指数」标签</li>
-            <li>新增：打开快讯/自选面板时自动刷新数据</li>
-            <li>快讯刷新间隔从 30 秒调整为 20 秒</li>
+            <li>新增：自选行情支持港股（hk00700）、美股（usAAPL）、国际金价（xau）</li>
+            <li>新增：自选页市场筛选标签（全部 / A股 / 港股 / 美股 / 黄金）</li>
+            <li>新增：搜索框支持搜索港股和美股，带市场标签显示</li>
+            <li>新增：底部固定展示国际金价（伦敦金）实时报价</li>
         </ul>
     ]]></change-notes>
 

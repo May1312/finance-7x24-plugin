@@ -9,6 +9,7 @@ import com.intellij.util.ui.JBFont;
 import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
+import javax.swing.border.Border;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.JTableHeader;
 import javax.swing.table.DefaultTableModel;
@@ -16,15 +17,18 @@ import javax.swing.table.TableRowSorter;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalTime;
-import java.time.DayOfWeek;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class WatchlistPanel extends JPanel {
 
@@ -32,9 +36,29 @@ public class WatchlistPanel extends JPanel {
     private static final String SORT_COL_KEY = "eastmoney.7x24.watchlist.sortColumn";
     private static final String SORT_STATE_KEY = "eastmoney.7x24.watchlist.sortState";
     private static final String INDEX_KEY = "eastmoney.7x24.watchlist.index";
+    private static final String FILTER_KEY = "eastmoney.7x24.watchlist.marketFilter";
     private static final String[] COLUMN_NAMES = {"代码", "名称", "最新价", "涨跌幅", "涨跌额"};
-    private static final List<String> INDEX_CODES = List.of("sh000001", "sz399001", "sz399006");
-    private static final String[] INDEX_NAMES = {"上证指数", "深证成指", "创业板指"};
+    private static final String[] INDEX_NAMES_A = {"上证指数", "深证成指", "创业板指"};
+    private static final String[] INDEX_NAMES_HK = {"恒生指数", "恒生科技"};
+    private static final String[] INDEX_NAMES_US = {"道琼斯", "纳斯达克", "标普500"};
+    private static final String[] INDEX_NAMES_GOLD = {"伦敦金", "纽约金", "伦敦银", "纽约白银"};
+    private static final List<String> INDEX_CODES_A = List.of("sh000001", "sz399001", "sz399006");
+    private static final List<String> INDEX_CODES_HK = List.of("hkHSI", "hkHSTECH");
+    private static final List<String> INDEX_CODES_US = List.of("usDJI", "usIXIC", "usINX");
+    private static final List<String> INDEX_CODES_GOLD = List.of("xau", "gc", "xag", "si");
+
+    private enum MarketFilter {
+        A("A股"),
+        HK("港股"),
+        US("美股"),
+        GOLD("黄金");
+
+        private final String displayName;
+
+        MarketFilter(String displayName) { this.displayName = displayName; }
+
+        public String getDisplayName() { return displayName; }
+    }
 
     private final PropertiesComponent properties;
     private final QuoteService quoteService = new QuoteService();
@@ -47,14 +71,18 @@ public class WatchlistPanel extends JPanel {
     private final TableRowSorter<DefaultTableModel> tableSorter = new TableRowSorter<>(tableModel);
     private final JLabel statusLabel = new JLabel("就绪");
 
-    private final JComboBox<String> indexCombo = new JComboBox<>(INDEX_NAMES);
+    private final JPanel filterTabPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+    private final List<JButton> filterButtons = new ArrayList<>();
+    private MarketFilter currentFilter = MarketFilter.A;
+
+    private final JComboBox<String> indexCombo = new JComboBox<>(INDEX_NAMES_A);
     private final JLabel indexValueLabel = new JLabel("", SwingConstants.CENTER);
     private final JLabel indexChangeLabel = new JLabel("", SwingConstants.CENTER);
 
     private final Timer autoRefreshTimer;
     private int sortedColumn = -1;
     private int sortState = 0;
-    private List<QuoteItem> lastIndexData = new ArrayList<>();
+    private volatile List<QuoteItem> lastIndexData = new ArrayList<>();
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     private boolean isRefreshing = false;
 
@@ -70,14 +98,19 @@ public class WatchlistPanel extends JPanel {
         initTable();
         initBottomPanel();
         restoreSortState();
-        restoreIndexSelection();
+        restoreFilter();
 
         // 统一用一个1秒tick的timer：倒计时+到0触发刷新
         autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
     }
 
     private void tickAndAutoRefresh() {
-        if (!isMarketOpen()) {
+        // 只有 A 股自动刷新；港股/美股/黄金手动刷新
+        if (currentFilter != MarketFilter.A) {
+            autoRefreshTimer.stop();
+            return;
+        }
+        if (!marketOpenFor(getFilteredCodes())) {
             autoRefreshTimer.stop();
             statusLabel.setText("闭市中");
             return;
@@ -102,7 +135,7 @@ public class WatchlistPanel extends JPanel {
 
     /** 设置状态栏（含倒计时后缀），刷新中时不显示倒计时 */
     private void setStatus(String baseText) {
-        if (baseText.equals("刷新中...")) {
+        if (baseText.equals("刷新中...") || currentFilter != MarketFilter.A) {
             statusLabel.setText(baseText);
         } else {
             statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
@@ -137,9 +170,105 @@ public class WatchlistPanel extends JPanel {
         JPanel topPanel = new JPanel(new BorderLayout(0, 6));
         topPanel.setBorder(JBUI.Borders.empty(6, 8, 10, 8));
         topPanel.add(actionRow, BorderLayout.NORTH);
+
+        initMarketFilterTabs();
+        JPanel filterRow = new JPanel(new BorderLayout());
+        filterRow.add(filterTabPanel, BorderLayout.WEST);
+        topPanel.add(filterRow, BorderLayout.CENTER);
         topPanel.add(statusLabel, BorderLayout.SOUTH);
 
         add(topPanel, BorderLayout.NORTH);
+    }
+
+    private void initMarketFilterTabs() {
+        JBFont btnFont = JBFont.label();
+        int btnPad = JBUI.scale(6);
+        int btnH = JBUI.scale(28);
+        int minWidth = JBUI.scale(56);
+
+        for (MarketFilter filter : MarketFilter.values()) {
+            JButton btn = new JButton(filter.getDisplayName());
+            btn.setFont(btnFont);
+            btn.setPreferredSize(new Dimension(Math.max(minWidth, btn.getPreferredSize().width), btnH));
+            btn.setFocusPainted(false);
+            btn.setOpaque(false);
+            btn.setContentAreaFilled(false);
+            btn.setBorder(createFilterBorder(false, btnPad));
+            btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            final MarketFilter f = filter;
+            btn.addActionListener(e -> setMarketFilter(f));
+            filterTabPanel.add(btn);
+            filterButtons.add(btn);
+        }
+    }
+
+    private static Border createFilterBorder(boolean active, int btnPad) {
+        JBColor underline = new JBColor(new Color(0x2F6FAD), new Color(0x4A90D9));
+        JBColor transparent = new JBColor(new Color(0xE8E8E8), new Color(0x3D3F41));
+        Color line = active ? underline : transparent;
+        return BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, JBUI.scale(2), 0, line),
+                JBUI.Borders.empty(btnPad, 12, btnPad, 12));
+    }
+
+    private void setMarketFilter(MarketFilter filter) {
+        currentFilter = filter;
+        properties.setValue(FILTER_KEY, filter.name());
+        updateFilterButtons();
+        updateIndexComboForFilter();
+        if (filter == MarketFilter.A) {
+            resumeTimer();
+        } else {
+            autoRefreshTimer.stop();
+        }
+        refreshQuotes(false);
+    }
+
+    /** 切换底部大盘指数下拉框到当前市场的指数列表，恢复该标签记住的选中项并刷新数据 */
+    private void updateIndexComboForFilter() {
+        String[] names = currentIndexNames();
+        String saved = properties.getValue(indexKeyFor(currentFilter), "0");
+        indexCombo.setModel(new DefaultComboBoxModel<>(names));
+        try {
+            int idx = Integer.parseInt(saved);
+            if (idx >= 0 && idx < names.length) {
+                indexCombo.setSelectedIndex(idx);
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        refreshIndexData(true);
+    }
+
+    private void updateFilterButtons() {
+        for (int i = 0; i < filterButtons.size(); i++) {
+            JButton btn = filterButtons.get(i);
+            MarketFilter bf = MarketFilter.values()[i];
+            boolean active = bf == currentFilter;
+            btn.setForeground(active
+                    ? UIManager.getColor("Label.foreground")
+                    : UIManager.getColor("Label.disabledForeground"));
+            btn.setBorder(createFilterBorder(active, JBUI.scale(6)));
+            btn.setFont(btn.getFont().deriveFont(active ? Font.BOLD : Font.PLAIN));
+        }
+    }
+
+    private void restoreFilter() {
+        String filterStr = properties.getValue(FILTER_KEY, "A");
+        try {
+            currentFilter = MarketFilter.valueOf(filterStr);
+        } catch (IllegalArgumentException ignored) {
+            currentFilter = MarketFilter.A;
+        }
+        updateFilterButtons();
+        indexCombo.setModel(new DefaultComboBoxModel<>(currentIndexNames()));
+        String idxStr = properties.getValue(indexKeyFor(currentFilter), "0");
+        try {
+            int idx = Integer.parseInt(idxStr);
+            if (idx >= 0 && idx < indexCombo.getItemCount()) {
+                indexCombo.setSelectedIndex(idx);
+            }
+        } catch (NumberFormatException ignored) {
+        }
     }
 
     private void initTable() {
@@ -164,7 +293,7 @@ public class WatchlistPanel extends JPanel {
 
         indexCombo.setFont(indexCombo.getFont().deriveFont(11f));
         indexCombo.setBorder(JBUI.Borders.empty(0, 4));
-        indexCombo.setPreferredSize(JBUI.size(96, 22));
+        indexCombo.setPreferredSize(JBUI.size(110, 22));
         indexCombo.setLightWeightPopupEnabled(true);
 
         indexValueLabel.setFont(indexValueLabel.getFont().deriveFont(Font.BOLD, 12f));
@@ -179,9 +308,13 @@ public class WatchlistPanel extends JPanel {
         add(bottomPanel, BorderLayout.SOUTH);
 
         indexCombo.addActionListener(e -> {
-            properties.setValue(INDEX_KEY, String.valueOf(indexCombo.getSelectedIndex()));
+            properties.setValue(indexKeyFor(currentFilter), String.valueOf(indexCombo.getSelectedIndex()));
             updateIndexDisplay();
         });
+    }
+
+    private String indexKeyFor(MarketFilter filter) {
+        return INDEX_KEY + "." + filter.name();
     }
 
     private void updateIndexDisplay() {
@@ -204,7 +337,7 @@ public class WatchlistPanel extends JPanel {
         Window window = SwingUtilities.getWindowAncestor(this);
         if (window == null) {
             String input = JOptionPane.showInputDialog(this,
-                    "输入股票或 ETF 代码，多个代码可用逗号或空格分隔；指数可输入 sh000001",
+                    "输入股票或 ETF 代码，多个代码可用逗号或空格分隔；\n指数：sh000001 / 港股：hk00700 / 美股：usAAPL / 黄金：xau, gc, xag, si",
                     "添加自选", JOptionPane.PLAIN_MESSAGE);
             if (input != null) addCodesFromText(input);
             return;
@@ -257,7 +390,8 @@ public class WatchlistPanel extends JPanel {
         }
 
         List<String> codes = parseCodes();
-        codes.removeIf(c -> codesToRemove.stream().anyMatch(c::endsWith));
+        codes.removeIf(c -> codesToRemove.stream()
+                .anyMatch(ctr -> c.toLowerCase().endsWith(ctr.toLowerCase())));
         saveCodes(codes);
         statusLabel.setText("已删除 " + codesToRemove.size() + " 只");
         refreshQuotes(true);
@@ -293,15 +427,15 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void refreshQuotes(boolean force) {
-        List<String> codes = parseCodes();
+        List<String> codes = getFilteredCodes();
         if (codes.isEmpty()) {
             tableModel.setRowCount(0);
-            setStatus("点击「添加」搜索股票");
+            setStatus(parseCodes().isEmpty() ? "点击「添加」搜索股票" : "当前市场无自选股");
             refreshIndexData(force);
             return;
         }
 
-        boolean marketClosed = !isMarketOpen();
+        boolean marketClosed = !marketOpenFor(codes);
         if (marketClosed) {
             setStatus("闭市中");
         } else {
@@ -351,21 +485,91 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void refreshIndexData(boolean force) {
+        List<String> indexCodes = currentIndexCodes();
+        if (indexCodes.isEmpty()) {
+            return;
+        }
         new Thread(() -> {
             try {
-                lastIndexData = quoteService.fetchQuotes(INDEX_CODES);
-                SwingUtilities.invokeLater(this::updateIndexDisplay);
+                lastIndexData = quoteService.fetchQuotes(indexCodes);
             } catch (Exception ignored) {}
+            SwingUtilities.invokeLater(() -> updateIndexDisplay());
         }).start();
     }
 
-    private boolean isMarketOpen() {
+    private List<String> currentIndexCodes() {
+        return switch (currentFilter) {
+            case A -> INDEX_CODES_A;
+            case HK -> INDEX_CODES_HK;
+            case US -> INDEX_CODES_US;
+            case GOLD -> INDEX_CODES_GOLD;
+        };
+    }
+
+    private String[] currentIndexNames() {
+        return switch (currentFilter) {
+            case A -> INDEX_NAMES_A;
+            case HK -> INDEX_NAMES_HK;
+            case US -> INDEX_NAMES_US;
+            case GOLD -> INDEX_NAMES_GOLD;
+        };
+    }
+
+    private boolean marketOpenFor(List<String> codes) {
+        if (codes.isEmpty()) return false;
+        Set<MarketType> markets = codes.stream()
+                .map(MarketType::fromCode)
+                .collect(Collectors.toSet());
+        for (MarketType m : markets) {
+            if (isMarketOpen(m)) return true;
+        }
+        return false;
+    }
+
+    private boolean isMarketOpen(MarketType market) {
+        return switch (market) {
+            case A -> isAShareOpen();
+            case HK -> isHKOpen();
+            case US -> isUSOpen();
+            case GOLD -> isGoldOpen();
+        };
+    }
+
+    private boolean isAShareOpen() {
         DayOfWeek dow = LocalDate.now().getDayOfWeek();
         if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) return false;
         LocalTime now = LocalTime.now();
         boolean morning = !now.isBefore(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(11, 30));
         boolean afternoon = !now.isBefore(LocalTime.of(13, 0)) && now.isBefore(LocalTime.of(15, 0));
         return morning || afternoon;
+    }
+
+    private boolean isHKOpen() {
+        ZoneId hk = ZoneId.of("Asia/Hong_Kong");
+        DayOfWeek dow = LocalDate.now(hk).getDayOfWeek();
+        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) return false;
+        LocalTime now = LocalTime.now(hk);
+        boolean morning = !now.isBefore(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(12, 0));
+        boolean afternoon = !now.isBefore(LocalTime.of(13, 0)) && now.isBefore(LocalTime.of(16, 0));
+        return morning || afternoon;
+    }
+
+    private boolean isUSOpen() {
+        ZoneId ny = ZoneId.of("America/New_York");
+        ZonedDateTime now = ZonedDateTime.now(ny);
+        if (now.getDayOfWeek() == DayOfWeek.SATURDAY || now.getDayOfWeek() == DayOfWeek.SUNDAY) return false;
+        LocalTime t = now.toLocalTime();
+        return !t.isBefore(LocalTime.of(9, 30)) && t.isBefore(LocalTime.of(16, 0));
+    }
+
+    private boolean isGoldOpen() {
+        ZoneId sh = ZoneId.of("Asia/Shanghai");
+        DayOfWeek dow = LocalDate.now(sh).getDayOfWeek();
+        if (dow == DayOfWeek.SUNDAY) return false;
+        if (dow == DayOfWeek.SATURDAY) {
+            return LocalTime.now(sh).isBefore(LocalTime.of(5, 0));
+        }
+        return true;
     }
 
     private void updateTable(List<QuoteItem> items) {
@@ -480,17 +684,6 @@ public class WatchlistPanel extends JPanel {
         }
     }
 
-    private void restoreIndexSelection() {
-        String idxStr = properties.getValue(INDEX_KEY, "0");
-        try {
-            int idx = Integer.parseInt(idxStr);
-            if (idx >= 0 && idx < indexCombo.getItemCount()) {
-                indexCombo.setSelectedIndex(idx);
-            }
-        } catch (NumberFormatException ignored) {
-        }
-    }
-
     private String formatPrice(double value) {
         if (value == 0) return "-";
         return String.format("%.3f", value);
@@ -509,15 +702,7 @@ public class WatchlistPanel extends JPanel {
     }
 
     private String normalizeCode(String code) {
-        if (code == null) return null;
-        String c = code.trim().toLowerCase();
-        if (c.matches("(sh|sz)?\\d{6}")) {
-            if (!c.startsWith("sh") && !c.startsWith("sz")) {
-                c = c.startsWith("5") || c.startsWith("6") || c.startsWith("9") ? "sh" + c : "sz" + c;
-            }
-            return c;
-        }
-        return null;
+        return CodeUtils.normalize(code);
     }
 
     private List<String> parseCodes() {
@@ -526,12 +711,25 @@ public class WatchlistPanel extends JPanel {
         String[] parts = raw.split("[,，\\s]+");
         Set<String> codes = new LinkedHashSet<>();
         for (String part : parts) {
-            String c = part.trim().toLowerCase();
-            if (c.matches("(sh|sz)?\\d{6}")) {
-                codes.add(c);
+            String normalized = CodeUtils.normalize(part);
+            if (normalized != null) {
+                codes.add(normalized);
             }
         }
         return new ArrayList<>(codes);
+    }
+
+    private List<String> getFilteredCodes() {
+        List<String> codes = parseCodes();
+        MarketType target = switch (currentFilter) {
+            case A -> MarketType.A;
+            case HK -> MarketType.HK;
+            case US -> MarketType.US;
+            case GOLD -> MarketType.GOLD;
+        };
+        return codes.stream()
+                .filter(c -> MarketType.fromCode(c) == target)
+                .collect(Collectors.toList());
     }
 
     private void saveCodes(List<String> codes) {

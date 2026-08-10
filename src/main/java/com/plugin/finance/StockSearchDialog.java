@@ -196,24 +196,16 @@ public class StockSearchDialog extends JDialog {
                 JLabel nameLabel = new JLabel(item.getName());
                 nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD, 13f));
 
-                JLabel marketBadge = new JLabel("SH".equalsIgnoreCase(item.getMarket()) ? " SH " : " SZ ");
+                JLabel marketBadge = new JLabel(" " + marketLabel(item.getMarket()) + " ");
                 marketBadge.setFont(marketBadge.getFont().deriveFont(Font.BOLD, 9f));
                 marketBadge.setForeground(Color.WHITE);
                 marketBadge.setOpaque(true);
-                marketBadge.setBackground("SH".equalsIgnoreCase(item.getMarket()) ? new Color(0x1565C0) : new Color(0xC62828));
+                marketBadge.setBackground(marketColor(item.getMarket()));
 
                 JPanel topRow = new JPanel(new FlowLayout(FlowLayout.LEFT, scale(6), 0));
                 topRow.setOpaque(false);
                 topRow.add(nameLabel);
                 topRow.add(marketBadge);
-                if (!item.getTypeLabel().isEmpty()) {
-                    JLabel etfBadge = new JLabel(" " + item.getTypeLabel() + " ");
-                    etfBadge.setFont(etfBadge.getFont().deriveFont(Font.BOLD, 9f));
-                    etfBadge.setForeground(Color.WHITE);
-                    etfBadge.setOpaque(true);
-                    etfBadge.setBackground(new Color(0x2E7D32));
-                    topRow.add(etfBadge);
-                }
 
                 JLabel codeLabel = new JLabel(item.getFullCode());
                 codeLabel.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
@@ -222,6 +214,14 @@ public class StockSearchDialog extends JDialog {
                 JPanel bottomRow = new JPanel(new FlowLayout(FlowLayout.LEFT, scale(6), 0));
                 bottomRow.setOpaque(false);
                 bottomRow.add(codeLabel);
+                if (!item.getTypeLabel().isEmpty()) {
+                    JLabel typeBadge = new JLabel(" " + item.getTypeLabel() + " ");
+                    typeBadge.setFont(typeBadge.getFont().deriveFont(Font.BOLD, 9f));
+                    typeBadge.setForeground(Color.WHITE);
+                    typeBadge.setOpaque(true);
+                    typeBadge.setBackground(new Color(0x2E7D32));
+                    bottomRow.add(typeBadge);
+                }
 
                 JPanel leftPanel = new JPanel();
                 leftPanel.setLayout(new BoxLayout(leftPanel, BoxLayout.Y_AXIS));
@@ -235,6 +235,20 @@ public class StockSearchDialog extends JDialog {
             }
 
             return panel;
+        }
+
+        private String marketLabel(String market) {
+            if ("US".equalsIgnoreCase(market)) return "美股";
+            if ("HK".equalsIgnoreCase(market)) return "港股";
+            if ("GOLD".equalsIgnoreCase(market)) return "黄金";
+            return "SH".equalsIgnoreCase(market) ? "沪" : "深";
+        }
+
+        private Color marketColor(String market) {
+            if ("US".equalsIgnoreCase(market)) return new Color(0x1565C0);
+            if ("HK".equalsIgnoreCase(market)) return new Color(0x2E7D32);
+            if ("GOLD".equalsIgnoreCase(market)) return new Color(0xB8860B);
+            return "SH".equalsIgnoreCase(market) ? new Color(0xC62828) : new Color(0xE65100);
         }
     }
 }
