@@ -105,11 +105,6 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void tickAndAutoRefresh() {
-        // 只有 A 股自动刷新；港股/美股/黄金手动刷新
-        if (currentFilter != MarketFilter.A) {
-            autoRefreshTimer.stop();
-            return;
-        }
         if (!marketOpenFor(getFilteredCodes())) {
             autoRefreshTimer.stop();
             statusLabel.setText("闭市中");
@@ -135,7 +130,7 @@ public class WatchlistPanel extends JPanel {
 
     /** 设置状态栏（含倒计时后缀），刷新中时不显示倒计时 */
     private void setStatus(String baseText) {
-        if (baseText.equals("刷新中...") || currentFilter != MarketFilter.A) {
+        if (baseText.equals("刷新中...")) {
             statusLabel.setText(baseText);
         } else {
             statusLabel.setText(baseText + "    下次刷新" + countdownSeconds + "秒");
@@ -216,11 +211,7 @@ public class WatchlistPanel extends JPanel {
         properties.setValue(FILTER_KEY, filter.name());
         updateFilterButtons();
         updateIndexComboForFilter();
-        if (filter == MarketFilter.A) {
-            resumeTimer();
-        } else {
-            autoRefreshTimer.stop();
-        }
+        resumeTimer();
         refreshQuotes(false);
     }
 
