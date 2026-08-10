@@ -19,9 +19,14 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public class QuoteService {
-    private static final String EASTMONEY_API_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f12,f14,f2,f3,f4,f15,f16,f17,f18&secids=%s";
+    private static final String EASTMONEY_API_URL = "https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f12,f14,f2,f3,f4,f15,f16,f17,f18&secids=%s";
     private static final String TENCENT_API_URL = "https://qt.gtimg.cn/q=%s";
     private static final String SINA_API_URL = "https://hq.sinajs.cn/list=%s";
+
+    private static final String REFERER_EASTMONEY = "https://push2delay.eastmoney.com/";
+    private static final String REFERER_TENCENT = "https://qt.gtimg.cn/";
+    private static final String REFERER_SINA = "https://finance.sina.com.cn/";
+
     private static final Logger LOG = Logger.getInstance(QuoteService.class);
     private String lastSource = "";
 
@@ -135,7 +140,7 @@ public class QuoteService {
             secIds.add(rc.eastmoneyMarket + "." + rc.code);
         }
 
-        JsonObject json = doJsonRequest(String.format(EASTMONEY_API_URL, String.join(",", secIds)));
+        JsonObject json = doJsonRequest(String.format(EASTMONEY_API_URL, String.join(",", secIds)), REFERER_EASTMONEY);
         JsonObject data = json.getAsJsonObject("data");
         if (data == null) {
             return map;
@@ -171,7 +176,7 @@ public class QuoteService {
             return map;
         }
         String joined = requestedCodes.stream().map(rc -> rc.tencentCode).collect(Collectors.joining(","));
-        String raw = doTextRequest(String.format(TENCENT_API_URL, joined), Charset.forName("GBK"));
+        String raw = doTextRequest(String.format(TENCENT_API_URL, joined), Charset.forName("GBK"), REFERER_TENCENT);
         Map<String, RequestedCode> byTc = new HashMap<>();
         for (RequestedCode rc : requestedCodes) {
             byTc.put(rc.tencentCode.toLowerCase(), rc);
@@ -225,7 +230,7 @@ public class QuoteService {
             return map;
         }
         String joined = withTencent.stream().map(rc -> rc.tencentCode).collect(Collectors.joining(","));
-        String raw = doTextRequest(String.format(TENCENT_API_URL, joined), Charset.forName("GBK"));
+        String raw = doTextRequest(String.format(TENCENT_API_URL, joined), Charset.forName("GBK"), REFERER_TENCENT);
         Map<String, RequestedCode> byTc = new HashMap<>();
         for (RequestedCode rc : withTencent) {
             byTc.put(rc.tencentCode.toLowerCase(), rc);
@@ -257,7 +262,7 @@ public class QuoteService {
             return map;
         }
         String joined = requestedCodes.stream().map(rc -> rc.sinaCode).collect(Collectors.joining(","));
-        String raw = doTextRequest(String.format(SINA_API_URL, joined), Charset.forName("GBK"));
+        String raw = doTextRequest(String.format(SINA_API_URL, joined), Charset.forName("GBK"), REFERER_SINA);
         Map<String, RequestedCode> bySina = new HashMap<>();
         for (RequestedCode rc : requestedCodes) {
             bySina.put(rc.sinaCode.toLowerCase(), rc);
@@ -307,7 +312,7 @@ public class QuoteService {
             return map;
         }
         String joined = withSina.stream().map(rc -> rc.sinaCode).collect(Collectors.joining(","));
-        String raw = doTextRequest(String.format(SINA_API_URL, joined), Charset.forName("GBK"));
+        String raw = doTextRequest(String.format(SINA_API_URL, joined), Charset.forName("GBK"), REFERER_SINA);
         Map<String, RequestedCode> bySina = new HashMap<>();
         for (RequestedCode rc : withSina) {
             bySina.put(rc.sinaCode.toLowerCase(), rc);
@@ -483,16 +488,16 @@ public class QuoteService {
         return line.substring(q1 + 1, q2);
     }
 
-    private JsonObject doJsonRequest(String urlStr) throws Exception {
-        return JsonParser.parseString(doTextRequest(urlStr, StandardCharsets.UTF_8)).getAsJsonObject();
+    private JsonObject doJsonRequest(String urlStr, String referer) throws Exception {
+        return JsonParser.parseString(doTextRequest(urlStr, StandardCharsets.UTF_8, referer)).getAsJsonObject();
     }
 
-    private String doTextRequest(String urlStr, Charset charset) throws Exception {
+    private String doTextRequest(String urlStr, Charset charset, String referer) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-        conn.setRequestProperty("Referer", "https://finance.sina.com.cn/");
+        conn.setRequestProperty("Referer", referer);
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(10000);
 
