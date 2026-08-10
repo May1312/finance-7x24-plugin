@@ -4,10 +4,9 @@
     <version>1.0.8</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
-        Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh, manual refresh, quote sorting, and fallback quote data sources.
+        Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh per market hours, and multi-source fallback quote data.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯和自选行情，支持 A股、港股、美股、国际金价（伦敦金），支持市场筛选、自动刷新、手动刷新、右键删除和表格排序。
-        自选行情优先使用公开行情接口，并在请求失败时尝试腾讯财经和新浪财经公开行情接口。
+        在 IDEA 中查看公开财经快讯和自选行情，支持 A股、港股、美股、国际金价，多数据源兜底，各市场按开市时段自动刷新。
         <br/><br/>
         本插件为非官方插件，与相关数据服务商及其关联公司无隶属、授权、认可或赞助关系。
         插件仅用于便捷查看公开财经资讯，不提供投资建议，行情数据可能存在延迟、遗漏或错误。
@@ -18,9 +17,13 @@
     <change-notes><![CDATA[
         <ul>
             <li>新增：自选行情支持港股（hk00700）、美股（usAAPL）、国际金价（xau）</li>
-            <li>新增：自选页市场筛选标签（全部 / A股 / 港股 / 美股 / 黄金）</li>
+            <li>新增：自选页市场筛选标签（A股 / 港股 / 美股 / 黄金）</li>
             <li>新增：搜索框支持搜索港股和美股，带市场标签显示</li>
-            <li>新增：底部固定展示国际金价（伦敦金）实时报价</li>
+            <li>新增：底部大盘指数实时行情，按市场筛选标签自动切换</li>
+            <li>新增：各市场自动刷新，按各自开市时段运行，闭市自动暂停</li>
+            <li>优化：黄金交易时间精准化，区分夏令时/冬令时及结算休市</li>
+            <li>修复：东方财富接口切换至延迟行情接口，规避风控问题</li>
+            <li>修复：行情接口 Referer 按数据源区分，提高请求成功率</li>
         </ul>
     ]]></change-notes>
 
