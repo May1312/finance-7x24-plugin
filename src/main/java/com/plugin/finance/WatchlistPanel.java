@@ -31,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class WatchlistPanel extends JPanel {
@@ -650,21 +651,27 @@ public class WatchlistPanel extends JPanel {
     }
 
     public void showAiAnalysis() {
+        PluginLog.info("[WatchlistPanel] showAiAnalysis called");
         if (aiDialog != null && aiDialog.isVisible()) {
+            PluginLog.info("[WatchlistPanel] aiDialog already open, showing front");
             aiDialog.toFront();
             return;
         }
+        PluginLog.info("[WatchlistPanel] currentApiKey=" + (currentApiKey != null ? "len=" + currentApiKey.length() : "null"));
         if (currentApiKey.isEmpty()) {
+            PluginLog.info("[WatchlistPanel] no apiKey, opening settings dialog");
             AISettingsDialog dialog = new AISettingsDialog(project, currentModelId);
             dialog.setVisible(true);
             if (dialog.isConfirmed()) {
                 saveAiConfig(dialog.getApiKey(), dialog.getModelId());
             } else {
+                PluginLog.info("[WatchlistPanel] settings dialog cancelled");
                 return;
             }
         }
 
         List<String> codes = getFilteredCodes();
+        PluginLog.info("[WatchlistPanel] filtered codes count=" + codes.size());
         if (codes.isEmpty()) {
             JOptionPane.showMessageDialog(this, "当前市场暂无自选股，请先添加...", "提示", JOptionPane.WARNING_MESSAGE);
             return;
@@ -675,6 +682,7 @@ public class WatchlistPanel extends JPanel {
         java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         aiDialog = buildAiAnalysisDialog(marketName, systemPrompt, history);
+        PluginLog.info("[WatchlistPanel] dialog built, calling runAiAutoAnalysis");
         runAiAutoAnalysis(marketName, history);
     }
 
@@ -695,54 +703,56 @@ public class WatchlistPanel extends JPanel {
         chatPane.setEditable(false);
         chatPane.setContentType("text/html");
         chatPane.setBackground(UIUtil.getPanelBackground());
+        chatPane.setCaretColor(UIUtil.getPanelBackground());
         chatPane.setBorder(JBUI.Borders.empty(12, 20));
         chatPane.setFont(JBFont.label().deriveFont(11f));
         JScrollPane chatScrollPane = new JBScrollPane(chatPane);
         chatScrollPane.setBorder(null);
         chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
 
-        // 根据面板背景亮度选择柔和的分隔线颜色，避免在暗色/亮色主题下都变成显眼灰条
+        // 根据面板背景亮度选择文本颜色
         final Color panelBg = UIUtil.getPanelBackground();
         final boolean isDarkBg = (panelBg.getRed() + panelBg.getGreen() + panelBg.getBlue()) / 3 < 128;
-        final String sepColor = isDarkBg ? "#4A4A4A" : "#E0E0E0";
-        final String separatorHtml = "<div style='height:1px;font-size:0;line-height:0;background:" + sepColor
-                + ";margin:6px 0;'>&nbsp;</div>";
+        final String textColor = isDarkBg ? "#E0E0E0" : "#333333";
+
+        // 预计算气泡颜色（Swing HTML 不支持 rgba，预先融合到背景色）
+        final String userBg, aiBg;
+        if (isDarkBg) {
+            userBg = "#1B4332";  // 微信风格绿色
+            aiBg = "#3A3B3D";
+        } else {
+            userBg = "#95EC69";  // 微信风格浅绿
+            aiBg = "#FFFFFF";
+        }
 
         StringBuilder chatHtml = new StringBuilder();
         java.util.function.BiConsumer<Boolean, String> appendMessage = (isUser, content) -> {
+            PluginLog.info("[WatchlistPanel] appendMessage isUser=" + isUser + ", content_len=" +
+                (content != null ? content.length() : 0) + ", preview=" +
+                (content != null ? content.replace("\n","\\n").substring(0, Math.min(100, content.length())) : "null"));
             SwingUtilities.invokeLater(() -> {
                 String safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
                 safe = safe.replace("\n", "<br>");
-                if (!isUser) {
-                    // 1. 股票名称行：同时加分隔线 + 标题样式，避免 </div> 被后续正则捕获而泄漏为文本
-                    safe = safe.replaceAll("(?:<br>){0,2}([^<【]*\\(\\d{4,}\\))",
-                            separatorHtml + "<span style='font-size:12px;font-weight:bold;color:#E0A030;'>$1</span>");
-                    // 2. 组合整体评估加标题样式 + 分隔线
-                    safe = safe.replaceAll("(<br>){1,2}(组合整体评估)",
-                            separatorHtml + "<span style='font-size:12px;font-weight:bold;color:#E0A030;'>组合整体评估</span>");
-                    // 3. 【关键词】加醒目样式
-                    safe = safe.replaceAll("【(\\S+?)】",
-                            "<span style='color:#4A9EFF;font-weight:bold;'>【$1】</span>");
-                }
                 String label = isUser ? "你" : "AI 分析";
                 String labelColor = isUser ? "#007AFF" : "#34A853";
-                String bubbleBg = isUser ? "rgba(0,122,255,0.12)" : "rgba(125,125,125,0.10)";
-                String borderColor = isUser ? "rgba(0,122,255,0.25)" : "rgba(125,125,125,0.15)";
+                String bubbleBg = isUser ? userBg : aiBg;
                 String align = isUser ? "right" : "left";
-                chatHtml.append("<div style='margin-bottom:14px;text-align:").append(align).append(";'>")
-                        .append("<div style='font-size:10px;font-weight:bold;color:")
-                        .append(labelColor).append(";margin-bottom:4px;'>")
-                        .append(label).append("</div>")
-                        .append("<div style='font-size:11px;line-height:1.6;display:inline-block;max-width:85%;")
-                        .append("background:").append(bubbleBg).append(";")
-                        .append("border:1px solid ").append(borderColor).append(";")
-                        .append("border-radius:8px;padding:8px 12px;text-align:left;'>")
-                        .append(safe).append("</div>")
-                        .append("</div>");
-                chatPane.setText("<html><body style='margin:0;padding:0;background-color:"
+                // 使用纯标签属性兼容 Swing HTML 3.2：
+                // font 标签不包裹块级元素(div/p)，颜色直接写在 td 上
+                chatHtml.append("<p align='").append(align).append("' style='margin-bottom:14px;'>")
+                        .append("<font size='2' color='").append(labelColor)
+                        .append("'><b>").append(label).append("</b></font><br>")
+                        .append("<table align='").append(align).append("' border='0' cellpadding='6' cellspacing='0' bgcolor='").append(bubbleBg)
+                        .append("'><tr><td><font size='3' color='").append(textColor).append("'>")
+                        .append(safe).append("</font></td></tr></table>")
+                        .append("</p>");
+                String finalHtml = "<html><body style='margin:0;padding:0;background-color:#"
                         + String.format("%06X", UIUtil.getPanelBackground().getRGB() & 0xFFFFFF)
-                        + ";'>" + chatHtml + "</body></html>");
-                chatPane.setCaretPosition(chatPane.getDocument().getLength());
+                        + ";color:" + textColor + ";'>" + chatHtml + "</body></html>";
+                PluginLog.info("[WatchlistPanel] finalHtml_len=" + finalHtml.length() + ", preview=" + finalHtml.substring(0, Math.min(200, finalHtml.length())).replace("\n", "\\n"));
+                chatPane.setText(finalHtml);
+                chatPane.revalidate();
+                chatPane.repaint();
                 // JTextPane 的光标滚动不可靠，必须显式把 JScrollPane 滚动到底部
                 SwingUtilities.invokeLater(() -> {
                     JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
@@ -864,8 +874,11 @@ public class WatchlistPanel extends JPanel {
                 (java.util.function.BiConsumer<Boolean, String>) dialog.getRootPane().getClientProperty("appendMessage");
 
         new Thread(() -> {
+            PluginLog.info("[WatchlistPanel] runAiAutoAnalysis thread started, market=" + marketName);
             List<QuoteItem> items = getFilteredItems();
+            PluginLog.info("[WatchlistPanel] getFilteredItems returned " + (items != null ? items.size() : 0) + " items");
             if (items.isEmpty()) {
+                PluginLog.info("[WatchlistPanel] runAiAutoAnalysis FAIL: no items, hiding loadingPanel");
                 SwingUtilities.invokeLater(() -> {
                     loadingPanel.setVisible(false);
                     appendMessage.accept(false, "暂无行情数据，请稍后重试...");
@@ -882,20 +895,33 @@ public class WatchlistPanel extends JPanel {
 
             String key = currentApiKey;
             String model = currentModelId;
+            PluginLog.info("[WatchlistPanel] using apiKey_len=" + (key != null ? key.length() : 0) + ", model=" + model);
             try {
-                new AIService(key, model).analyzeWatchlistAsync(finalItems, marketName).thenAccept(result -> {
-                    SwingUtilities.invokeLater(() -> {
-                        loadingPanel.setVisible(false);
-                        history.add(result);
-                        appendMessage.accept(false, result);
+                new AIService(key, model).analyzeWatchlistAsync(finalItems, marketName)
+                    .orTimeout(60, TimeUnit.SECONDS)
+                    .thenAccept(result -> {
+                        PluginLog.info("[WatchlistPanel] analyzeWatchlistAsync SUCCESS, result_len=" +
+                            (result != null ? result.length() : 0));
+                        SwingUtilities.invokeLater(() -> {
+                            loadingPanel.setVisible(false);
+                            history.add(result);
+                            appendMessage.accept(false, result);
+                        });
+                    }).exceptionally(e -> {
+                        PluginLog.error("[WatchlistPanel] analyzeWatchlistAsync FAILED: " + e.getClass().getName() + " - " + e.getMessage(), e);
+                        SwingUtilities.invokeLater(() -> {
+                            loadingPanel.setVisible(false);
+                            Throwable cause = (e instanceof java.util.concurrent.CompletionException) ? e.getCause() : e;
+                            String msg = cause != null ? cause.getMessage() : e.getMessage();
+                            if (cause instanceof java.util.concurrent.TimeoutException) {
+                                msg = "AI 分析超时，请检查网络或 API Key 是否有效";
+                            } else if (msg == null || msg.isEmpty()) {
+                                msg = "AI 分析失败，请稍后重试";
+                            }
+                            appendMessage.accept(false, "AI 分析失败: " + msg);
+                        });
+                        return null;
                     });
-                }).exceptionally(e -> {
-                    SwingUtilities.invokeLater(() -> {
-                        loadingPanel.setVisible(false);
-                        appendMessage.accept(false, "AI 分析失败: " + e.getMessage());
-                    });
-                    return null;
-                });
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
                     loadingPanel.setVisible(false);

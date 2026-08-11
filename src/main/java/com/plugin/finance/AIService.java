@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class AIService {
 
@@ -202,13 +203,21 @@ public class AIService {
 
     /** 异步分析自选股行情 */
     public CompletableFuture<String> analyzeWatchlistAsync(List<QuoteItem> items, String marketName) {
+        PluginLog.info("[AIService] analyzeWatchlistAsync START, items=" +
+            (items != null ? items.size() : 0) + ", market=" + marketName + ", model=" + modelId);
         return CompletableFuture.supplyAsync(() -> {
             if (items == null || items.isEmpty()) {
+                PluginLog.info("[AIService] analyzeWatchlistAsync FAIL: items empty");
                 return "暂无自选股可分析";
             }
             String context = buildMarketContext(items, marketName);
-            return callModel(ANALYSIS_SYSTEM_PROMPT,
+            PluginLog.info("[AIService] analyzeWatchlistAsync calling callModel, context_len=" + context.length());
+            String result = callModel(ANALYSIS_SYSTEM_PROMPT,
                 "请分析以下自选股行情，逐只给出点评和操作建议：\n\n" + context);
+            PluginLog.info("[AIService] analyzeWatchlistAsync DONE, result_len=" +
+                (result != null ? result.length() : 0) + ", preview=" +
+                (result != null ? result.substring(0, Math.min(80, result.length())) : "null"));
+            return result;
         }, SHARED_EXECUTOR);
     }
 
@@ -243,6 +252,7 @@ public class AIService {
 
     private String callModel(JsonArray messages) {
         try {
+            PluginLog.info("[AIService] callModel start, model=" + modelId + ", apiUrl=" + apiUrl + ", key_len=" + (apiKey != null ? apiKey.length() : 0));
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("model", modelId);
             requestBody.add("messages", messages);
@@ -256,43 +266,63 @@ public class AIService {
             }
 
             String jsonRequest = gson.toJson(requestBody);
+            PluginLog.info("[AIService] callModel calling callAPI, request_len=" + jsonRequest.length());
             String response = callAPI(jsonRequest);
-            return extractResponseText(response);
+            PluginLog.info("[AIService] callModel got response, len=" +
+                (response != null ? response.length() : 0) + ", preview=" +
+                (response != null ? response.substring(0, Math.min(200, response.length())) : "null"));
+            String extracted = extractResponseText(response);
+            PluginLog.info("[AIService] callModel extracted, len=" +
+                (extracted != null ? extracted.length() : 0));
+            return extracted;
         } catch (Exception e) {
+            PluginLog.error("[AIService] callModel EXCEPTION: " + e.getClass().getName() + " - " + e.getMessage(), e);
             return "AI分析失败: " + e.getMessage();
         }
     }
 
     private String callAPI(String jsonRequest) throws Exception {
-        URL url = new URL(apiUrl);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(30000);
-        conn.setDoOutput(true);
+        PluginLog.info("[AIService] callAPI connecting to " + apiUrl);
+        RuntimeException last429 = null;
+        for (int attempt = 0; attempt < 4; attempt++) {
+            URL url = new URL(apiUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(60000);
+            conn.setDoOutput(true);
 
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(jsonRequest.getBytes(StandardCharsets.UTF_8));
-        }
-
-        int code = conn.getResponseCode();
-        // 非 2xx → 读取错误流，给出可区分的错误信息
-        if (code < 200 || code >= 300) {
-            String errorBody = readStream(conn.getErrorStream());
-            if (code == 401) {
-                throw new RuntimeException("API Key 无效或已过期（HTTP 401）");
-            } else if (code == 429) {
-                throw new RuntimeException("请求频率超限，请稍后重试（HTTP 429）");
-            } else if (code >= 500) {
-                throw new RuntimeException("AI 服务端错误（HTTP " + code + "）: " + errorBody);
-            } else {
-                throw new RuntimeException("API 请求失败（HTTP " + code + "）: " + errorBody);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(jsonRequest.getBytes(StandardCharsets.UTF_8));
             }
-        }
 
-        return readStream(conn.getInputStream());
+            int code = conn.getResponseCode();
+            PluginLog.info("[AIService] callAPI response code=" + code);
+            if (code < 200 || code >= 300) {
+                String errorBody = readStream(conn.getErrorStream());
+                if (code == 401) {
+                    throw new RuntimeException("API Key 无效或已过期（HTTP 401）");
+                } else if (code == 429) {
+                    last429 = new RuntimeException("请求频率超限，请稍后重试（HTTP 429）");
+                    if (attempt < 3) {
+                        long waitMs = (long) Math.pow(2, attempt + 1) * 1000L;
+                        PluginLog.info("[AIService] 429 retry attempt=" + (attempt + 1) + "/3, waiting " + waitMs + "ms");
+                        try { Thread.sleep(waitMs); } catch (InterruptedException ignored) {}
+                        continue;
+                    }
+                    throw last429;
+                } else if (code >= 500) {
+                    throw new RuntimeException("AI 服务端错误（HTTP " + code + "）: " + errorBody);
+                } else {
+                    throw new RuntimeException("API 请求失败（HTTP " + code + "）: " + errorBody);
+                }
+            }
+
+            return readStream(conn.getInputStream());
+        }
+        throw last429 != null ? last429 : new RuntimeException("API 请求失败");
     }
 
     private String readStream(java.io.InputStream is) throws Exception {
@@ -309,6 +339,8 @@ public class AIService {
     }
 
     private String extractResponseText(String response) {
+        PluginLog.info("[AIService] extractResponseText start, response_len=" +
+            (response != null ? response.length() : 0));
         try {
             JsonObject json = gson.fromJson(response, JsonObject.class);
             JsonArray choices = json.getAsJsonArray("choices");
