@@ -167,10 +167,10 @@ public class WatchlistPanel extends JPanel {
         titleLabel.setFont(JBFont.label().asBold());
 
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-        rightPanel.add(aiBtn);
-        rightPanel.add(settingsBtn);
         rightPanel.add(addButton);
         rightPanel.add(refreshButton);
+        rightPanel.add(aiBtn);
+        rightPanel.add(settingsBtn);
 
         JPanel actionRow = new JPanel(new BorderLayout(8, 0));
         actionRow.add(titleLabel, BorderLayout.WEST);
