@@ -1,7 +1,6 @@
 package com.plugin.finance;
 
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.util.IconLoader;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.JBFont;
@@ -42,9 +41,9 @@ public class KuaixunPanel extends JPanel {
         cardsPanel.setLayout(new BoxLayout(cardsPanel, BoxLayout.Y_AXIS));
         cardsPanel.setBackground(new JBColor(new Color(0xF2F3F5), new Color(0x2B2D30)));
 
-        JButton refreshBtn = new JButton(IconLoader.getIcon("/icons/refresh.svg", KuaixunPanel.class));
-        refreshBtn.setToolTipText("刷新");
-        refreshBtn.setPreferredSize(JBUI.size(30, 28));
+        JButton refreshBtn = new JButton("刷新");
+        refreshBtn.setToolTipText("刷新快讯");
+        refreshBtn.setPreferredSize(new Dimension(50, 28));
         refreshBtn.addActionListener(e -> refreshData());
 
         JLabel titleLabel = new JLabel("财经 7x24");

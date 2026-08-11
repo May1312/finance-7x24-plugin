@@ -2,11 +2,11 @@ package com.plugin.finance;
 
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.util.IconLoader;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.JBFont;
 import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
 
 import javax.swing.*;
 import javax.swing.border.Border;
@@ -15,6 +15,7 @@ import javax.swing.table.JTableHeader;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.time.DayOfWeek;
@@ -50,21 +51,19 @@ public class WatchlistPanel extends JPanel {
     private static final List<String> INDEX_CODES_GOLD = List.of("xau", "gc", "xag", "si");
 
     private enum MarketFilter {
-        A("A股"),
-        HK("港股"),
-        US("美股"),
-        GOLD("黄金");
-
+        A("A股"), HK("港股"), US("美股"), GOLD("黄金");
         private final String displayName;
-
         MarketFilter(String displayName) { this.displayName = displayName; }
-
         public String getDisplayName() { return displayName; }
     }
 
+    private final Project project;
     private final PropertiesComponent properties;
     private final QuoteService quoteService = new QuoteService();
     private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private String currentApiKey = "";
+    private String currentModelId = "";
+    private JDialog aiDialog;
 
     private final DefaultTableModel tableModel = new DefaultTableModel(COLUMN_NAMES, 0) {
         @Override public boolean isCellEditable(int row, int column) { return false; }
@@ -92,17 +91,21 @@ public class WatchlistPanel extends JPanel {
     private static final int COUNTDOWN_STEP_MS = 1000;
 
     public WatchlistPanel(Project project) {
+        this.project = project;
         properties = PropertiesComponent.getInstance(project);
+        currentModelId = PropertiesComponent.getInstance().getValue("finance.ai.model", "");
+        if (currentModelId.isEmpty() || !AIService.MODELS.containsKey(currentModelId)) {
+            currentModelId = AIService.MODELS.keySet().iterator().next();
+        }
+        reloadAiConfig();
 
         setLayout(new BorderLayout());
-
         initTopPanel();
         initTable();
         initBottomPanel();
         restoreSortState();
         restoreFilter();
 
-        // 统一用一个1秒tick的timer：倒计时+到0触发刷新
         autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
     }
 
@@ -121,7 +124,6 @@ public class WatchlistPanel extends JPanel {
         updateCountdownDisplay();
     }
 
-    /** 只更新状态栏右侧的倒计时文字 */
     private void updateCountdownDisplay() {
         String text = statusLabel.getText();
         if (text.contains("下次刷新")) {
@@ -130,7 +132,6 @@ public class WatchlistPanel extends JPanel {
         }
     }
 
-    /** 设置状态栏（含倒计时后缀），刷新中时不显示倒计时 */
     private void setStatus(String baseText) {
         if (baseText.equals("刷新中...")) {
             statusLabel.setText(baseText);
@@ -140,20 +141,34 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void initTopPanel() {
-        JButton addButton = new JButton(IconLoader.getIcon("/icons/add.svg", WatchlistPanel.class));
+        JButton addButton = new JButton("添加");
         addButton.setToolTipText("添加自选股");
-        addButton.setPreferredSize(JBUI.size(30, 28));
+        addButton.setPreferredSize(JBUI.size(50, 28));
         addButton.addActionListener(e -> showAddDialog());
 
-        JButton refreshButton = new JButton(IconLoader.getIcon("/icons/refresh.svg", WatchlistPanel.class));
+        JButton refreshButton = new JButton("刷新");
         refreshButton.setToolTipText("刷新行情");
-        refreshButton.setPreferredSize(JBUI.size(30, 28));
+        refreshButton.setPreferredSize(JBUI.size(50, 28));
         refreshButton.addActionListener(e -> refreshQuotes(true));
+
+        JButton aiBtn = new JButton("AI 分析");
+        aiBtn.setToolTipText("AI 分析自选股行情");
+        aiBtn.setFont(JBFont.label().deriveFont(12f));
+        aiBtn.setPreferredSize(JBUI.size(65, 28));
+        aiBtn.addActionListener(e -> showAiAnalysis());
+
+        JButton settingsBtn = new JButton("设置");
+        settingsBtn.setToolTipText("AI 设置（API Key）");
+        settingsBtn.setFont(JBFont.label().deriveFont(12f));
+        settingsBtn.setPreferredSize(JBUI.size(50, 28));
+        settingsBtn.addActionListener(e -> showAiSettings());
 
         JLabel titleLabel = new JLabel("自选行情");
         titleLabel.setFont(JBFont.label().asBold());
 
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        rightPanel.add(aiBtn);
+        rightPanel.add(settingsBtn);
         rightPanel.add(addButton);
         rightPanel.add(refreshButton);
 
@@ -217,7 +232,6 @@ public class WatchlistPanel extends JPanel {
         refreshQuotes(false);
     }
 
-    /** 切换底部大盘指数下拉框到当前市场的指数列表，恢复该标签记住的选中项并刷新数据 */
     private void updateIndexComboForFilter() {
         String[] names = currentIndexNames();
         String saved = properties.getValue(indexKeyFor(currentFilter), "0");
@@ -227,8 +241,7 @@ public class WatchlistPanel extends JPanel {
             if (idx >= 0 && idx < names.length) {
                 indexCombo.setSelectedIndex(idx);
             }
-        } catch (NumberFormatException ignored) {
-        }
+        } catch (NumberFormatException ignored) {}
         refreshIndexData(true);
     }
 
@@ -260,8 +273,7 @@ public class WatchlistPanel extends JPanel {
             if (idx >= 0 && idx < indexCombo.getItemCount()) {
                 indexCombo.setSelectedIndex(idx);
             }
-        } catch (NumberFormatException ignored) {
-        }
+        } catch (NumberFormatException ignored) {}
     }
 
     private void initTable() {
@@ -392,7 +404,6 @@ public class WatchlistPanel extends JPanel {
 
     private void installPopupMenu() {
         JPopupMenu popup = new JPopupMenu();
-
         JMenuItem deleteItem = new JMenuItem("删除选中");
         deleteItem.addActionListener(e -> deleteSelected());
         popup.add(deleteItem);
@@ -423,7 +434,6 @@ public class WatchlistPanel extends JPanel {
         List<String> codes = getFilteredCodes();
         List<String> indexCodes = currentIndexCodes();
 
-        // 合并自选和大盘指数为一次请求，涨跌幅完全同步
         Set<String> merged = new LinkedHashSet<>(codes);
         merged.addAll(indexCodes);
         List<String> fetchCodes = new ArrayList<>(merged);
@@ -448,13 +458,11 @@ public class WatchlistPanel extends JPanel {
                 try {
                     List<QuoteItem> allItems = quoteService.fetchQuotes(fetchCodes);
                     SwingUtilities.invokeLater(() -> {
-                        // 从合并结果中拆分出自选股和指数
                         Map<String, QuoteItem> itemMap = new HashMap<>();
                         for (QuoteItem item : allItems) {
                             itemMap.put(CodeUtils.stripPrefix(item.getCode()), item);
                         }
 
-                        // 自选股（按原始顺序）
                         List<QuoteItem> filteredItems = new ArrayList<>();
                         for (String code : codes) {
                             QuoteItem item = itemMap.get(CodeUtils.stripPrefix(code));
@@ -462,7 +470,6 @@ public class WatchlistPanel extends JPanel {
                         }
                         updateTable(filteredItems);
 
-                        // 大盘指数
                         lastIndexData.clear();
                         for (String idxCode : indexCodes) {
                             QuoteItem item = itemMap.get(CodeUtils.stripPrefix(idxCode));
@@ -503,12 +510,8 @@ public class WatchlistPanel extends JPanel {
 
     private void refreshIndexData(boolean force) {
         List<String> indexCodes = currentIndexCodes();
-        if (indexCodes.isEmpty()) {
-            return;
-        }
-        if (!force && !marketOpenFor(indexCodes)) {
-            return;
-        }
+        if (indexCodes.isEmpty()) return;
+        if (!force && !marketOpenFor(indexCodes)) return;
         new Thread(() -> {
             try {
                 lastIndexData = quoteService.fetchQuotes(indexCodes);
@@ -588,22 +591,13 @@ public class WatchlistPanel extends JPanel {
         ZonedDateTime now = ZonedDateTime.now(sh);
         DayOfWeek dow = now.getDayOfWeek();
         LocalTime t = now.toLocalTime();
-        // 伦敦夏令时 → 北京时间 6:00 开盘/5:00 收盘
-        // 伦敦冬令时 → 北京时间 7:00 开盘/6:00 收盘
         boolean dst = london.getRules().isDaylightSavings(now.toInstant());
         LocalTime open = dst ? LocalTime.of(6, 0) : LocalTime.of(7, 0);
         LocalTime close = dst ? LocalTime.of(5, 0) : LocalTime.of(6, 0);
 
         if (dow == DayOfWeek.SUNDAY) return false;
-        if (dow == DayOfWeek.SATURDAY) {
-            // 周六凌晨交易到 close 结束
-            return t.isBefore(close);
-        }
-        if (dow == DayOfWeek.MONDAY) {
-            // 周一 open 开盘，之前闭市
-            return !t.isBefore(open);
-        }
-        // 周二~周五：open ~ 次日 close 交易，close ~ open 休市结算
+        if (dow == DayOfWeek.SATURDAY) return t.isBefore(close);
+        if (dow == DayOfWeek.MONDAY) return !t.isBefore(open);
         return !t.isBefore(open) || t.isBefore(close);
     }
 
@@ -622,28 +616,310 @@ public class WatchlistPanel extends JPanel {
         countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     }
 
-    public void pauseTimer() {
-        autoRefreshTimer.stop();
-    }
-
+    public void pauseTimer() { autoRefreshTimer.stop(); }
     public void resumeTimer() {
-        if (!autoRefreshTimer.isRunning()) {
-            autoRefreshTimer.start();
+        if (!autoRefreshTimer.isRunning()) autoRefreshTimer.start();
+    }
+
+/** 重新加载 AI 配置（从文件读取） */
+    private void reloadAiConfig() {
+        AIService.ModelInfo info = AIService.MODELS.get(currentModelId);
+        if (info != null) {
+            currentApiKey = AIService.loadApiKey(info.provider);
         }
     }
 
-    @Override
-    public void removeNotify() {
-        autoRefreshTimer.stop();
-        super.removeNotify();
+    /** 保存 AI 配置（更新字段 + 持久化，保留其他厂商的 key） */
+    private void saveAiConfig(String newKey, String newModelId) {
+        if (newModelId == null || !AIService.MODELS.containsKey(newModelId)) {
+            return;
+        }
+        currentModelId = newModelId;
+        String provider = AIService.MODELS.get(newModelId).provider;
+        AIService.saveConfig(provider, newKey);
+        currentApiKey = newKey;
     }
 
-    @Override
-    public void addNotify() {
+    /** 显示 AI 设置对话框 */
+    public void showAiSettings() {
+        AISettingsDialog dialog = new AISettingsDialog(project, currentModelId);
+        dialog.setVisible(true);
+        if (dialog.isConfirmed()) {
+            saveAiConfig(dialog.getApiKey(), dialog.getModelId());
+        }
+    }
+
+    public void showAiAnalysis() {
+        if (aiDialog != null && aiDialog.isVisible()) {
+            aiDialog.toFront();
+            return;
+        }
+        if (currentApiKey.isEmpty()) {
+            AISettingsDialog dialog = new AISettingsDialog(project, currentModelId);
+            dialog.setVisible(true);
+            if (dialog.isConfirmed()) {
+                saveAiConfig(dialog.getApiKey(), dialog.getModelId());
+            } else {
+                return;
+            }
+        }
+
+        List<String> codes = getFilteredCodes();
+        if (codes.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "当前市场暂无自选股，请先添加...", "提示", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        final String marketName = currentFilter.getDisplayName();
+        final String systemPrompt = AIService.ANALYSIS_SYSTEM_PROMPT;
+        java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        aiDialog = buildAiAnalysisDialog(marketName, systemPrompt, history);
+        runAiAutoAnalysis(marketName, history);
+    }
+
+    /**
+     * 构建 AI 分析聊天对话框
+     */
+    @SuppressWarnings("unchecked")
+    private JDialog buildAiAnalysisDialog(String marketName, String systemPrompt,
+                                          java.util.List<String> history) {
+        JDialog dialog = new JDialog((Frame) null, "AI 自选股分析", false);
+        dialog.setLayout(new BorderLayout());
+        dialog.setSize(560, 460);
+        dialog.setLocationRelativeTo(this);
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+
+        // ── 聊天区域（单个 JTextPane 拼 HTML） ──
+        JTextPane chatPane = new JTextPane();
+        chatPane.setEditable(false);
+        chatPane.setContentType("text/html");
+        chatPane.setBackground(UIUtil.getPanelBackground());
+        chatPane.setBorder(JBUI.Borders.empty(12, 20));
+        chatPane.setFont(JBFont.label().deriveFont(11f));
+        JScrollPane chatScrollPane = new JBScrollPane(chatPane);
+        chatScrollPane.setBorder(null);
+        chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
+
+        // 根据面板背景亮度选择柔和的分隔线颜色，避免在暗色/亮色主题下都变成显眼灰条
+        final Color panelBg = UIUtil.getPanelBackground();
+        final boolean isDarkBg = (panelBg.getRed() + panelBg.getGreen() + panelBg.getBlue()) / 3 < 128;
+        final String sepColor = isDarkBg ? "#4A4A4A" : "#E0E0E0";
+        final String separatorHtml = "<div style='height:1px;font-size:0;line-height:0;background:" + sepColor
+                + ";margin:6px 0;'>&nbsp;</div>";
+
+        StringBuilder chatHtml = new StringBuilder();
+        java.util.function.BiConsumer<Boolean, String> appendMessage = (isUser, content) -> {
+            SwingUtilities.invokeLater(() -> {
+                String safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+                safe = safe.replace("\n", "<br>");
+                if (!isUser) {
+                    // 1. 股票名称行：同时加分隔线 + 标题样式，避免 </div> 被后续正则捕获而泄漏为文本
+                    safe = safe.replaceAll("(?:<br>){0,2}([^<【]*\\(\\d{4,}\\))",
+                            separatorHtml + "<span style='font-size:12px;font-weight:bold;color:#E0A030;'>$1</span>");
+                    // 2. 组合整体评估加标题样式 + 分隔线
+                    safe = safe.replaceAll("(<br>){1,2}(组合整体评估)",
+                            separatorHtml + "<span style='font-size:12px;font-weight:bold;color:#E0A030;'>组合整体评估</span>");
+                    // 3. 【关键词】加醒目样式
+                    safe = safe.replaceAll("【(\\S+?)】",
+                            "<span style='color:#4A9EFF;font-weight:bold;'>【$1】</span>");
+                }
+                String label = isUser ? "你" : "AI 分析";
+                String labelColor = isUser ? "#007AFF" : "#34A853";
+                String bubbleBg = isUser ? "rgba(0,122,255,0.12)" : "rgba(125,125,125,0.10)";
+                String borderColor = isUser ? "rgba(0,122,255,0.25)" : "rgba(125,125,125,0.15)";
+                String align = isUser ? "right" : "left";
+                chatHtml.append("<div style='margin-bottom:14px;text-align:").append(align).append(";'>")
+                        .append("<div style='font-size:10px;font-weight:bold;color:")
+                        .append(labelColor).append(";margin-bottom:4px;'>")
+                        .append(label).append("</div>")
+                        .append("<div style='font-size:11px;line-height:1.6;display:inline-block;max-width:85%;")
+                        .append("background:").append(bubbleBg).append(";")
+                        .append("border:1px solid ").append(borderColor).append(";")
+                        .append("border-radius:8px;padding:8px 12px;text-align:left;'>")
+                        .append(safe).append("</div>")
+                        .append("</div>");
+                chatPane.setText("<html><body style='margin:0;padding:0;background-color:"
+                        + String.format("%06X", UIUtil.getPanelBackground().getRGB() & 0xFFFFFF)
+                        + ";'>" + chatHtml + "</body></html>");
+                chatPane.setCaretPosition(chatPane.getDocument().getLength());
+                // JTextPane 的光标滚动不可靠，必须显式把 JScrollPane 滚动到底部
+                SwingUtilities.invokeLater(() -> {
+                    JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
+                    vBar.setValue(vBar.getMaximum());
+                });
+            });
+        };
+
+        // ── 顶部加载面板 ──
+        JPanel loadingPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 8));
+        loadingPanel.setBackground(UIUtil.getPanelBackground());
+        JProgressBar progressBar = new JProgressBar();
+        progressBar.setIndeterminate(true);
+        progressBar.setPreferredSize(new Dimension(16, 16));
+        JLabel loadingLabel = new JLabel("正在获取行情数据...");
+        loadingLabel.setFont(JBFont.label().deriveFont(12f));
+        loadingLabel.setForeground(JBColor.GRAY);
+        loadingPanel.add(progressBar);
+        loadingPanel.add(loadingLabel);
+
+        // ── 思考中提示 ──
+        JPanel thinkingPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        thinkingPanel.setBackground(UIUtil.getPanelBackground());
+        JLabel thinkingLabel = new JLabel("AI 思考中...");
+        thinkingLabel.setFont(JBFont.label().deriveFont(11f));
+        thinkingLabel.setForeground(JBColor.GRAY);
+        thinkingPanel.add(thinkingLabel);
+        thinkingPanel.setVisible(false);
+
+        // ── 输入区域 ──
+        JPanel inputPanel = new JPanel(new BorderLayout(8, 0));
+        inputPanel.setBorder(JBUI.Borders.empty(0, 12, 12, 12));
+        inputPanel.setBackground(UIUtil.getPanelBackground());
+        JTextField inputField = new JTextField();
+        inputField.setToolTipText("输入问题，按 Enter 发送");
+        inputField.setFont(JBFont.label().deriveFont(13f));
+        JButton sendBtn = new JButton("发送");
+        sendBtn.setPreferredSize(new Dimension(60, 30));
+        inputPanel.add(inputField, BorderLayout.CENTER);
+        inputPanel.add(sendBtn, BorderLayout.EAST);
+
+        // ── 发送消息 ──
+        Runnable sendAction = () -> {
+            String userMsg = inputField.getText().trim();
+            if (userMsg.isEmpty()) return;
+            inputField.setText("");
+            history.add(userMsg);
+            appendMessage.accept(true, userMsg);
+            thinkingPanel.setVisible(true);
+            sendBtn.setEnabled(false);
+
+            String key = currentApiKey;
+            String model = currentModelId;
+            new Thread(() -> {
+                try {
+                    new AIService(key, model).chatAsync(systemPrompt, history).thenAccept(result -> {
+                        SwingUtilities.invokeLater(() -> {
+                            thinkingPanel.setVisible(false);
+                            sendBtn.setEnabled(true);
+                            history.add(result);
+                            appendMessage.accept(false, result);
+                        });
+                    }).exceptionally(e -> {
+                        SwingUtilities.invokeLater(() -> {
+                            thinkingPanel.setVisible(false);
+                            sendBtn.setEnabled(true);
+                            appendMessage.accept(false, "AI 分析失败: " + e.getMessage());
+                        });
+                        return null;
+                    });
+                } catch (Exception e) {
+                    SwingUtilities.invokeLater(() -> {
+                        thinkingPanel.setVisible(false);
+                        sendBtn.setEnabled(true);
+                        appendMessage.accept(false, "服务初始化失败: " + e.getMessage());
+                    });
+                }
+            }).start();
+        };
+
+        sendBtn.addActionListener(e -> sendAction.run());
+        inputField.addActionListener(e -> sendAction.run());
+
+        // Esc 关闭
+        dialog.getRootPane().registerKeyboardAction(
+                e -> dialog.dispose(),
+                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                JComponent.WHEN_IN_FOCUSED_WINDOW
+        );
+
+        // 组装
+        JPanel inputWrapper = new JPanel(new BorderLayout());
+        inputWrapper.setBackground(UIUtil.getPanelBackground());
+        inputWrapper.add(thinkingPanel, BorderLayout.NORTH);
+        inputWrapper.add(inputPanel, BorderLayout.CENTER);
+
+        dialog.add(loadingPanel, BorderLayout.NORTH);
+        dialog.add(chatScrollPane, BorderLayout.CENTER);
+        dialog.add(inputWrapper, BorderLayout.SOUTH);
+
+        // 存储需要跨方法访问的组件
+        dialog.getRootPane().putClientProperty("loadingPanel", loadingPanel);
+        dialog.getRootPane().putClientProperty("loadingLabel", loadingLabel);
+        dialog.getRootPane().putClientProperty("appendMessage", appendMessage);
+
+        dialog.setVisible(true);
+        return dialog;
+    }
+
+    /**
+     * 后台获取行情数据并触发 AI 自动分析
+     */
+    @SuppressWarnings("unchecked")
+    private void runAiAutoAnalysis(String marketName, java.util.List<String> history) {
+        JDialog dialog = aiDialog;
+        JPanel loadingPanel = (JPanel) dialog.getRootPane().getClientProperty("loadingPanel");
+        JLabel loadingLabel = (JLabel) dialog.getRootPane().getClientProperty("loadingLabel");
+        java.util.function.BiConsumer<Boolean, String> appendMessage =
+                (java.util.function.BiConsumer<Boolean, String>) dialog.getRootPane().getClientProperty("appendMessage");
+
+        new Thread(() -> {
+            List<QuoteItem> items = getFilteredItems();
+            if (items.isEmpty()) {
+                SwingUtilities.invokeLater(() -> {
+                    loadingPanel.setVisible(false);
+                    appendMessage.accept(false, "暂无行情数据，请稍后重试...");
+                });
+                return;
+            }
+
+            final List<QuoteItem> finalItems = items;
+            final String marketContext = AIService.buildMarketContext(items, marketName);
+            history.add(marketContext);
+
+            SwingUtilities.invokeLater(() ->
+                    loadingLabel.setText("正在分析 " + items.size() + " 只自选股..."));
+
+            String key = currentApiKey;
+            String model = currentModelId;
+            try {
+                new AIService(key, model).analyzeWatchlistAsync(finalItems, marketName).thenAccept(result -> {
+                    SwingUtilities.invokeLater(() -> {
+                        loadingPanel.setVisible(false);
+                        history.add(result);
+                        appendMessage.accept(false, result);
+                    });
+                }).exceptionally(e -> {
+                    SwingUtilities.invokeLater(() -> {
+                        loadingPanel.setVisible(false);
+                        appendMessage.accept(false, "AI 分析失败: " + e.getMessage());
+                    });
+                    return null;
+                });
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    loadingPanel.setVisible(false);
+                    appendMessage.accept(false, "服务初始化失败: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private List<QuoteItem> getFilteredItems() {
+        List<String> codes = getFilteredCodes();
+        if (codes.isEmpty()) return List.of();
+        try {
+            return quoteService.fetchQuotes(codes);
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    @Override public void removeNotify() { autoRefreshTimer.stop(); super.removeNotify(); }
+
+    @Override public void addNotify() {
         super.addNotify();
-        if (!autoRefreshTimer.isRunning()) {
-            autoRefreshTimer.start();
-        }
+        if (!autoRefreshTimer.isRunning()) autoRefreshTimer.start();
         refreshQuotes(true);
     }
 
@@ -670,8 +946,7 @@ public class WatchlistPanel extends JPanel {
         }
         JTableHeader header = quoteTable.getTableHeader();
         header.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
+            @Override public void mouseClicked(MouseEvent e) {
                 int viewColumn = header.columnAtPoint(e.getPoint());
                 if (viewColumn < 0) return;
                 int modelColumn = quoteTable.convertColumnIndexToModel(viewColumn);
@@ -697,60 +972,32 @@ public class WatchlistPanel extends JPanel {
         saveSortState();
     }
 
-    private void saveSortState() {
-        properties.setValue(SORT_COL_KEY, String.valueOf(sortedColumn));
-        properties.setValue(SORT_STATE_KEY, String.valueOf(sortState));
-    }
-
     private void restoreSortState() {
-        String colStr = properties.getValue(SORT_COL_KEY, "-1");
-        String stateStr = properties.getValue(SORT_STATE_KEY, "0");
         try {
-            int col = Integer.parseInt(colStr);
-            int state = Integer.parseInt(stateStr);
-            if (col >= 0 && (state == 1 || state == 2)) {
-                sortedColumn = col;
-                sortState = state;
-                SortOrder order = state == 1 ? SortOrder.DESCENDING : SortOrder.ASCENDING;
-                tableSorter.setSortKeys(List.of(new RowSorter.SortKey(col, order)));
-            }
+            sortedColumn = Integer.parseInt(properties.getValue(SORT_COL_KEY, "-1"));
+            sortState = Integer.parseInt(properties.getValue(SORT_STATE_KEY, "0"));
         } catch (NumberFormatException ignored) {
+            sortedColumn = -1;
+            sortState = 0;
+        }
+        if (sortedColumn >= 0) {
+            SortOrder order = sortState == 1 ? SortOrder.DESCENDING : SortOrder.ASCENDING;
+            tableSorter.setSortKeys(List.of(new RowSorter.SortKey(sortedColumn, order)));
         }
     }
 
-    private String formatPrice(double value) {
-        if (value == 0) return "-";
-        return String.format("%.3f", value);
-    }
-
-    private String formatPercent(double value) {
-        return String.format("%+.2f%%", value);
-    }
-
-    private double parseDisplayNumber(String value) {
-        try {
-            return Double.parseDouble(value.replace("%", "").replace("+", ""));
-        } catch (NumberFormatException ignored) {
-            return 0;
+    private void saveSortState() {
+        if (sortedColumn >= 0) {
+            properties.setValue(SORT_COL_KEY, String.valueOf(sortedColumn));
+            properties.setValue(SORT_STATE_KEY, String.valueOf(sortState));
+        } else {
+            properties.setValue(SORT_COL_KEY, "-1");
+            properties.setValue(SORT_STATE_KEY, "0");
         }
     }
 
-    private String normalizeCode(String code) {
-        return CodeUtils.normalize(code);
-    }
-
-    private List<String> parseCodes() {
-        String raw = properties.getValue(CODES_KEY, "");
-        if (raw.isEmpty()) return new ArrayList<>();
-        String[] parts = raw.split("[,，\\s]+");
-        Set<String> codes = new LinkedHashSet<>();
-        for (String part : parts) {
-            String normalized = CodeUtils.normalize(part);
-            if (normalized != null) {
-                codes.add(normalized);
-            }
-        }
-        return new ArrayList<>(codes);
+    private String normalizeCode(String raw) {
+        return CodeUtils.normalize(raw);
     }
 
     private List<String> getFilteredCodes() {
@@ -766,11 +1013,38 @@ public class WatchlistPanel extends JPanel {
                 .collect(Collectors.toList());
     }
 
+    private List<String> parseCodes() {
+        String raw = properties.getValue(CODES_KEY, "");
+        if (raw.isEmpty()) return new ArrayList<>();
+        List<String> codes = new ArrayList<>();
+        for (String s : raw.split("[,，\\s]+")) {
+            String normalized = normalizeCode(s.trim());
+            if (normalized != null) codes.add(normalized);
+        }
+        return codes;
+    }
+
     private void saveCodes(List<String> codes) {
         properties.setValue(CODES_KEY, String.join(",", codes));
     }
 
-    // --- Renderer ---
+    private String formatPrice(double price) {
+        if (price == 0) return "-";
+        return String.format("%.2f", price);
+    }
+
+    private String formatPercent(double percent) {
+        return String.format("%+.2f%%", percent);
+    }
+
+    private double parseDisplayNumber(Object value) {
+        if (value instanceof Number) return ((Number) value).doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(value).replace("%", "").replace("+", "").trim());
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
 
     private static class WatchlistCellRenderer extends DefaultTableCellRenderer {
         private static final Color RISE_COLOR = new JBColor(new Color(0xC62828), new Color(0xFF6B6B));
@@ -782,8 +1056,7 @@ public class WatchlistPanel extends JPanel {
                                                        boolean hasFocus, int row, int column) {
             super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
             setBorder(JBUI.Borders.empty(0, 6));
-            setHorizontalAlignment(CENTER);
-
+            setHorizontalAlignment(SwingConstants.CENTER);
             if (isSelected) return this;
 
             int modelColumn = table.convertColumnIndexToModel(column);
@@ -807,6 +1080,7 @@ public class WatchlistPanel extends JPanel {
         }
 
         private double parsePercent(Object value) {
+            if (value instanceof Number) return ((Number) value).doubleValue();
             try {
                 return Double.parseDouble(String.valueOf(value).replace("%", "").replace("+", "").trim());
             } catch (NumberFormatException ignored) {
