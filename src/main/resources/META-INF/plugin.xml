@@ -4,9 +4,9 @@
     <version>1.0.9</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
-        Finance 7x24 News shows public financial news and watchlist quotes in IntelliJ IDEA. It supports 7x24 news updates, stock and ETF watchlists, automatic refresh per market hours, and multi-source fallback quote data.
+        Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯和自选行情，支持 A股、港股、美股、国际金价，多数据源兜底，各市场按开市时段自动刷新。
+        在 IDEA 中查看公开财经快讯、自选行情并进行 AI 分析。支持 A股、港股、美股、国际金价自选行情，多数据源兜底，各市场按开市时段自动刷新；AI 自选股分析支持商汤 SenseNova、智谱 GLM 多厂商模型，可多轮追问。
         <br/><br/>
         本插件为非官方插件，与相关数据服务商及其关联公司无隶属、授权、认可或赞助关系。
         插件仅用于便捷查看公开财经资讯，不提供投资建议，行情数据可能存在延迟、遗漏或错误。
