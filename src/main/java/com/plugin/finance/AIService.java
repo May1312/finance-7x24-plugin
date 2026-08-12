@@ -8,6 +8,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -285,7 +286,7 @@ public class AIService {
         PluginLog.info("[AIService] callAPI connecting to " + apiUrl);
         RuntimeException last429 = null;
         for (int attempt = 0; attempt < 4; attempt++) {
-            URL url = new URL(apiUrl);
+            URL url = URI.create(apiUrl).toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");

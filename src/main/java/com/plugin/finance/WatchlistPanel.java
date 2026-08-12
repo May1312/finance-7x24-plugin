@@ -769,7 +769,7 @@ public class WatchlistPanel extends JPanel {
         progressBar.setPreferredSize(new Dimension(16, 16));
         JLabel loadingLabel = new JLabel("正在获取行情数据...");
         loadingLabel.setFont(JBFont.label().deriveFont(12f));
-        loadingLabel.setForeground(JBColor.GRAY);
+        loadingLabel.setForeground(JBColor.namedColor("Label.disabledForeground", new Color(0x999999)));
         loadingPanel.add(progressBar);
         loadingPanel.add(loadingLabel);
 
@@ -778,7 +778,7 @@ public class WatchlistPanel extends JPanel {
         thinkingPanel.setBackground(UIUtil.getPanelBackground());
         JLabel thinkingLabel = new JLabel("AI 思考中...");
         thinkingLabel.setFont(JBFont.label().deriveFont(11f));
-        thinkingLabel.setForeground(JBColor.GRAY);
+        thinkingLabel.setForeground(JBColor.namedColor("Label.disabledForeground", new Color(0x999999)));
         thinkingPanel.add(thinkingLabel);
         thinkingPanel.setVisible(false);
 

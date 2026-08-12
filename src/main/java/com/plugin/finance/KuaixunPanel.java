@@ -449,12 +449,12 @@ public class KuaixunPanel extends JPanel {
             g2.fillRoundRect(x, y, w, h, arc, arc);
 
             g2.setColor(CARD_BORDER);
-            g2.setStroke(new BasicStroke(JBUI.scale(1f)));
+            g2.setStroke(new BasicStroke(JBUI.scale(1)));
             g2.drawRoundRect(x, y, w - 1, h - 1, arc, arc);
 
             // time pill
             if (timeText != null && !timeText.isEmpty()) {
-                Font pillFont = JBFont.small().deriveFont(Font.PLAIN, JBUI.scale(11f));
+                Font pillFont = JBFont.small().deriveFont(Font.PLAIN, JBUI.scaleFontSize(11f));
                 g2.setFont(pillFont);
                 FontMetrics fm = g2.getFontMetrics();
                 int pillH = fm.getHeight() + JBUI.scale(4);

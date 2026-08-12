@@ -8,6 +8,7 @@ import com.intellij.openapi.diagnostic.Logger;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -496,7 +497,7 @@ public class QuoteService {
     }
 
     private String doTextRequest(String urlStr, Charset charset, String referer) throws Exception {
-        URL url = new URL(urlStr);
+        URL url = URI.create(urlStr).toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("User-Agent", "Mozilla/5.0");

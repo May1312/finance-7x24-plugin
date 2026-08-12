@@ -32,62 +32,62 @@ public class AISettingsDialog extends JDialog {
         setResizable(false);
         setLayout(new BorderLayout());
         // 固定尺寸，防止切换厂商时布局抖动
-        setSize(440, 260);
+        setSize(480, 280);
 
         JPanel mainPanel = new JPanel();
         mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
-        mainPanel.setBorder(JBUI.Borders.empty(12, 16));
+        mainPanel.setBorder(JBUI.Borders.empty(14, 18));
 
         // 厂商选择
-        JPanel providerPanel = new JPanel(new BorderLayout(5, 0));
+        JPanel providerPanel = new JPanel(new BorderLayout(6, 0));
         providerPanel.setOpaque(false);
         JLabel providerLabel = new JLabel("厂商：");
         providerLabel.setFont(JBFont.label());
-        providerLabel.setPreferredSize(new Dimension(40, 28));
+        providerLabel.setPreferredSize(new Dimension(55, 28));
         providerPanel.add(providerLabel, BorderLayout.WEST);
 
         providerCombo = new JComboBox<>(AIService.PROVIDERS.toArray(new String[0]));
         providerCombo.setFont(JBFont.label().deriveFont(13f));
         providerCombo.setBorder(JBUI.Borders.customLine(JBColor.border(), 1));
-        providerCombo.setPreferredSize(new Dimension(0, 24));
+        providerCombo.setPreferredSize(new Dimension(0, 26));
         providerPanel.add(providerCombo);
         mainPanel.add(providerPanel);
 
-        mainPanel.add(Box.createVerticalStrut(8));
+        mainPanel.add(Box.createVerticalStrut(10));
 
         // 模型选择
-        JPanel modelPanel = new JPanel(new BorderLayout(5, 0));
+        JPanel modelPanel = new JPanel(new BorderLayout(6, 0));
         modelPanel.setOpaque(false);
         JLabel modelLabel = new JLabel("模型：");
         modelLabel.setFont(JBFont.label());
-        modelLabel.setPreferredSize(new Dimension(40, 28));
+        modelLabel.setPreferredSize(new Dimension(55, 28));
         modelPanel.add(modelLabel, BorderLayout.WEST);
 
         modelCombo = new JComboBox<>();
         modelCombo.setFont(JBFont.label().deriveFont(13f));
         modelCombo.setBorder(JBUI.Borders.customLine(JBColor.border(), 1));
-        modelCombo.setPreferredSize(new Dimension(0, 24));
+        modelCombo.setPreferredSize(new Dimension(0, 26));
         modelPanel.add(modelCombo);
         mainPanel.add(modelPanel);
 
-        mainPanel.add(Box.createVerticalStrut(10));
+        mainPanel.add(Box.createVerticalStrut(12));
 
         // API Key 输入
-        JPanel keyPanel = new JPanel(new BorderLayout(5, 0));
+        JPanel keyPanel = new JPanel(new BorderLayout(6, 0));
         keyPanel.setOpaque(false);
         JLabel keyLabel = new JLabel("Key：");
         keyLabel.setFont(JBFont.label());
-        keyLabel.setPreferredSize(new Dimension(40, 28));
+        keyLabel.setPreferredSize(new Dimension(55, 28));
         keyPanel.add(keyLabel, BorderLayout.WEST);
         keyField = new JTextField();
         keyField.setFont(JBFont.label().deriveFont(13f));
         keyField.setColumns(18);
         keyField.setBorder(null);
-        keyField.setPreferredSize(new Dimension(0, 24));
+        keyField.setPreferredSize(new Dimension(0, 26));
         keyPanel.add(keyField);
         mainPanel.add(keyPanel);
 
-        mainPanel.add(Box.createVerticalStrut(8));
+        mainPanel.add(Box.createVerticalStrut(10));
 
         // 注册提示（可点击链接）
         JPanel helpPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));

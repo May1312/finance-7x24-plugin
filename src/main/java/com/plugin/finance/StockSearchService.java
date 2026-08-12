@@ -9,6 +9,7 @@ import com.google.gson.JsonParser;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -36,7 +37,7 @@ public class StockSearchService {
 
         try {
             String urlStr = String.format(SEARCH_API, URLEncoder.encode(trimmed, "UTF-8"));
-            URL url = new URL(urlStr);
+            URL url = URI.create(urlStr).toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
