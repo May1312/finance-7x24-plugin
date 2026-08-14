@@ -108,6 +108,9 @@ public class WatchlistPanel extends JPanel {
         restoreFilter();
 
         autoRefreshTimer = new Timer(COUNTDOWN_STEP_MS, e -> tickAndAutoRefresh());
+
+        // 初始加载行情数据，避免重启后表格为空直到首次定时器触发
+        refreshQuotes(false);
     }
 
     private void tickAndAutoRefresh() {
@@ -638,6 +641,7 @@ public class WatchlistPanel extends JPanel {
         currentModelId = newModelId;
         String provider = AIService.MODELS.get(newModelId).provider;
         AIService.saveConfig(provider, newKey);
+        PropertiesComponent.getInstance().setValue("finance.ai.model", newModelId);
         currentApiKey = newKey;
     }
 

@@ -214,7 +214,7 @@ public class AISettingsDialog extends JDialog {
             onProviderChanged();
             return;
         }
-        // 选中对应厂商
+        // 选中对应厂商（触发 ActionListener 联动 key 和 URL）
         for (int i = 0; i < providerCombo.getItemCount(); i++) {
             if (providerCombo.getItemAt(i).equals(saved.provider)) {
                 providerCombo.setSelectedIndex(i);
@@ -222,7 +222,9 @@ public class AISettingsDialog extends JDialog {
             }
         }
         refreshModelCombo();
-        // 选中对应模型
+        // 确保 key 和 URL 同步
+        onProviderChanged();
+        // 最后选中对应模型（放在 onProviderChanged 之后，避免被 refreshModelCombo 重置）
         List<AIService.ModelInfo> models = AIService.PROVIDER_MODELS.get(saved.provider);
         for (int i = 0; i < models.size(); i++) {
             if (models.get(i).id.equals(savedModelId)) {
@@ -230,8 +232,6 @@ public class AISettingsDialog extends JDialog {
                 break;
             }
         }
-        // 确保 key 和 URL 同步
-        onProviderChanged();
     }
 
     private String getSelectedModelId() {

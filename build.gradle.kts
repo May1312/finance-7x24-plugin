@@ -19,7 +19,7 @@ dependencies {
 
 intellijPlatform {
     pluginConfiguration {
-        version = "1.0.9"
+        version = "2.0.0"
 
         ideaVersion {
             sinceBuild = "241"

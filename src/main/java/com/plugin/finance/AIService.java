@@ -71,6 +71,8 @@ public class AIService {
                 "https://token.sensenova.cn/v1/chat/completions", true);
         registerModel("sensenova-6.8-flash-lite", "6.8 Flash-Lite", "商汤 SenseNova",
                 "https://token.sensenova.cn/v1/chat/completions", true);
+        registerModel("glm-5.2", "GLM-5.2", "商汤 SenseNova",
+                "https://token.sensenova.cn/v1/chat/completions", true);
 
         // 智谱 GLM
         registerProvider("智谱 GLM", "https://open.bigmodel.cn  →  API Keys → 新建 API Key");

@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>1.0.9</version>
+    <version>2.0.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
@@ -16,11 +16,10 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>新增：AI 自选股分析功能，支持多厂商模型（商汤 SenseNova、智谱 GLM），一键分析自选组合</li>
-            <li>新增：AI 分析聊天对话框，支持多轮追问，行情驱动自动首轮分析</li>
-            <li>新增：AI 设置面板，支持厂商/模型联动切换、API Key 配置与测试连接</li>
-            <li>优化：AI 分析对话框紧凑化设计，暗色主题适配</li>
-            <li>优化：工具窗口图标，选中态上涨折线红色高亮</li>
+            <li>修复：重启后非 A 股（港股/美股/黄金）自选行情不显示的问题，构造函数增加初始数据加载</li>
+            <li>修复：AI 模型选择重启后丢失的问题，保存时持久化到 PropertiesComponent</li>
+            <li>修复：AI 设置对话框打开后模型未恢复为上次选中项的问题</li>
+            <li>新增：商汤 SenseNova 支持 GLM-5.2 模型</li>
         </ul>
     ]]></change-notes>
 
