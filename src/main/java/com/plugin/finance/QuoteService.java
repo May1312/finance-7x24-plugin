@@ -17,6 +17,11 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 public class QuoteService {
@@ -27,6 +32,20 @@ public class QuoteService {
     private static final String REFERER_EASTMONEY = "https://push2delay.eastmoney.com/";
     private static final String REFERER_TENCENT = "https://qt.gtimg.cn/";
     private static final String REFERER_SINA = "https://finance.sina.com.cn/";
+    /** 腾讯前复权日K线接口（免key），返回 data.{code}.qfqday = [[日期,开,收,高,低,量],...] */
+    private static final String TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=%s,day,,,%d,qfq";
+    /** 腾讯美股专用日K线接口，美股代码需带交易所后缀：.OQ纳斯达克 / .N纽交所 / .A美交所 */
+    private static final String TENCENT_US_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param=us%s%s,day,,,%d,qfq";
+    private static final String[] US_EXCHANGE_SUFFIXES = {".OQ", ".N", ".A"};
+    private static final String REFERER_TENCENT_KLINE = "https://gu.qq.com/";
+    /** 已知港股指数裸代码（hkHSI/hkHSCEI/hkHSCCI 去掉 hk 前缀后的小写），需与美股字母代码区分 */
+    private static final Set<String> HK_INDEX_CODES = Set.of("hsi", "hscei", "hscci");
+    /** 均线拉取专用线程池（daemon，固定4线程），避免阻塞 IO 占用 JVM 公共 ForkJoinPool */
+    private static final ExecutorService MA_EXECUTOR = Executors.newFixedThreadPool(4, r -> {
+        Thread t = new Thread(r, "QuoteService-MaFetcher");
+        t.setDaemon(true);
+        return t;
+    });
 
     private static final Logger LOG = Logger.getInstance(QuoteService.class);
     private String lastSource = "";
@@ -129,6 +148,163 @@ public class QuoteService {
 
     public String getLastSource() {
         return lastSource;
+    }
+
+    // ── 日K均线数据（供 AI 分析用，仅在用户触发分析时拉取，勿挂在行情轮询定时器上）──
+
+    /** 均线信息：字段为 0 表示数据不足未计算 */
+    public static class MaInfo {
+        public final double ma5, ma10, ma20, ma60;
+        /** 现价较 MA20 乖离率(%)，0 表示未计算 */
+        public final double bias20;
+        /** 近5日累计涨跌幅(%)，0 表示未计算 */
+        public final double chg5;
+
+        MaInfo(double ma5, double ma10, double ma20, double ma60, double bias20, double chg5) {
+            this.ma5 = ma5;
+            this.ma10 = ma10;
+            this.ma20 = ma20;
+            this.ma60 = ma60;
+            this.bias20 = bias20;
+            this.chg5 = chg5;
+        }
+    }
+
+    /**
+     * 批量拉取日K并计算均线。逐只并行请求（专用线程池），单只失败仅跳过该只（对应上下文无均线行）。
+     * 黄金品种不支持日K接口，自动跳过。
+     */
+    public Map<String, MaInfo> fetchMaInfos(List<QuoteItem> items) {
+        Map<String, MaInfo> result = new ConcurrentHashMap<>();
+        if (items == null || items.isEmpty()) {
+            return result;
+        }
+        List<Callable<Void>> tasks = new ArrayList<>();
+        for (QuoteItem item : items) {
+            String code = item.getCode();
+            tasks.add(() -> {
+                String tcCode = toTencentKlineCode(code);
+                if (tcCode == null) {
+                    return null;
+                }
+                try {
+                    MaInfo info = fetchMaInfo(tcCode);
+                    if (info != null) {
+                        result.put(code, info);
+                    }
+                } catch (Exception e) {
+                    LOG.warn("均线数据请求失败: " + tcCode, e);
+                }
+                return null;
+            });
+        }
+        try {
+            MA_EXECUTOR.invokeAll(tasks);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return result;
+    }
+
+    /** 裸代码 → 腾讯日K代码。A股6位数字加市场前缀，港股5位数字加hk，港股指数(hsi等)大写加hk，美股字母加us，黄金返回 null */
+    private String toTencentKlineCode(String bareCode) {
+        String c = bareCode == null ? "" : bareCode.trim().toLowerCase();
+        if (c.isEmpty()) {
+            return null;
+        }
+        // 黄金品种（与 parseRequestedCode 的判定保持一致）
+        if ("xauusd".equals(c) || "hf_xau".equals(c) || "gold".equals(c) || GoldInstrument.fromCode(c) != null) {
+            return null;
+        }
+        // 港股指数（hkHSI 等裸代码为字母），走通用日K端点，代码需大写（hkHSI）
+        if (HK_INDEX_CODES.contains(c)) {
+            return "hk" + c.toUpperCase();
+        }
+        if (c.matches("\\d{6}")) {
+            return inferMarketPrefix(c) + c;
+        }
+        if (c.matches("\\d{5}")) {
+            return "hk" + c;
+        }
+        if (c.matches("[a-z][a-z0-9.]{0,9}")) {
+            return "us" + c.toUpperCase();
+        }
+        return null;
+    }
+
+    /** 拉取单只日K（70个交易日，含当日）并计算 MA5/10/20/60、MA20乖离、5日涨跌 */
+    private MaInfo fetchMaInfo(String tcCode) throws Exception {
+        List<Double> closes = null;
+        if (tcCode.startsWith("us")) {
+            // 美股走专用端点且需交易所后缀，逐个尝试（.OQ纳斯达克/.N纽交所/.A美交所）
+            String ticker = tcCode.substring(2);
+            for (String suffix : US_EXCHANGE_SUFFIXES) {
+                closes = fetchTencentCloses(String.format(TENCENT_US_KLINE_URL, ticker, suffix, 70));
+                if (closes != null && closes.size() >= 6) {
+                    break;
+                }
+                closes = null;
+            }
+        } else {
+            closes = fetchTencentCloses(String.format(TENCENT_KLINE_URL, tcCode, 70));
+        }
+        if (closes == null || closes.size() < 6) {
+            return null;
+        }
+        int n = closes.size();
+        double last = closes.get(n - 1);
+        double ma5 = avgLast(closes, 5);
+        double ma10 = avgLast(closes, 10);
+        double ma20 = avgLast(closes, 20);
+        double ma60 = avgLast(closes, 60);
+        double bias20 = ma20 > 0 ? (last / ma20 - 1) * 100 : 0;
+        double chg5 = (last / closes.get(n - 6) - 1) * 100;
+        return new MaInfo(ma5, ma10, ma20, ma60, bias20, chg5);
+    }
+
+    /** 请求腾讯日K接口并解析收盘价序列，格式 data.{code}.qfqday/day = [[日期,开,收,...],...] */
+    private List<Double> fetchTencentCloses(String url) throws Exception {
+        JsonObject json = doJsonRequest(url, REFERER_TENCENT_KLINE);
+        if (json == null || !json.has("data") || json.get("data").isJsonNull()) {
+            return null;
+        }
+        JsonObject data = json.getAsJsonObject("data");
+        if (data == null || data.isEmpty()) {
+            return null;
+        }
+        // 取第一个股票对象（键名即请求代码，可能带交易所后缀）
+        JsonObject codeObj = data.getAsJsonObject(data.keySet().iterator().next());
+        if (codeObj == null) {
+            return null;
+        }
+        JsonArray rows = codeObj.has("qfqday") ? codeObj.getAsJsonArray("qfqday")
+                : (codeObj.has("day") ? codeObj.getAsJsonArray("day") : null);
+        if (rows == null || rows.size() < 6) {
+            return null;
+        }
+        List<Double> closes = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            JsonArray row = rows.get(i).getAsJsonArray();
+            if (row.size() >= 3) {
+                double close = parseDouble(row.get(2).getAsString());
+                if (close > 0) {
+                    closes.add(close);
+                }
+            }
+        }
+        return closes;
+    }
+
+    /** 最近 n 个收盘价的算术平均，数据不足返回 0 */
+    private static double avgLast(List<Double> closes, int n) {
+        if (closes.size() < n) {
+            return 0;
+        }
+        double sum = 0;
+        for (int i = closes.size() - n; i < closes.size(); i++) {
+            sum += closes.get(i);
+        }
+        return sum / n;
     }
 
     private Map<String, QuoteItem> fetchEastmoneyQuotes(List<RequestedCode> requestedCodes) throws Exception {

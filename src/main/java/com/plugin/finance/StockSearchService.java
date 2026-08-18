@@ -99,8 +99,9 @@ public class StockSearchService {
                             market = "HK";
                             typeLabel = "";
                         } else {
-                            // A股 / 基金 / 指数
-                            boolean isStock = "AStock".equals(classify);
+                            // A股 / 基金 / 指数。注意：科创板（688xxx，如长鑫科技688825、中芯国际688981）
+                            // 的 Classify 返回数字 "23" 而非 "AStock"，需一并放行，否则科创板全部搜不到
+                            boolean isStock = "AStock".equals(classify) || "23".equals(classify);
                             boolean isFund = "Fund".equals(classify);
                             boolean isIndex = "Index".equals(classify);
                             if (!isStock && !isFund && !isIndex) {

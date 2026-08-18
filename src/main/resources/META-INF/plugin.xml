@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.0.0</version>
+    <version>2.0.1</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
@@ -16,10 +16,14 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>修复：重启后非 A 股（港股/美股/黄金）自选行情不显示的问题，构造函数增加初始数据加载</li>
-            <li>修复：AI 模型选择重启后丢失的问题，保存时持久化到 PropertiesComponent</li>
-            <li>修复：AI 设置对话框打开后模型未恢复为上次选中项的问题</li>
-            <li>新增：商汤 SenseNova 支持 GLM-5.2 模型</li>
+            <li>新增：AI 分析接入日K均线数据（MA5/MA10/MA20/MA60、现价较MA20乖离、5日涨跌），逐只并行拉取，失败自动降级为无均线</li>
+            <li>新增：行情上下文附数据时间与各市场交易状态（A股/港股/美股按各自交易时段计算），避免误导性表述</li>
+            <li>新增：AI 输出后处理——K线阴/阳按涨跌幅符号自动纠正，与列表红绿保持一致</li>
+            <li>优化：分析提示词强化——均值回归视角、按品种判断涨跌幅极端度、收红/收绿判定强约束、禁止编造未提供数据</li>
+            <li>修复：盘中 K 线阴阳线误用昨收判定，与列表红绿显示矛盾的问题</li>
+            <li>修复：科创板股票搜索不到的问题</li>
+            <li>修复：港股指数均线数据误走美股接口的问题</li>
+            <li>优化：均线拉取改用专用线程池，不再占用 JVM 公共 ForkJoinPool</li>
         </ul>
     ]]></change-notes>
 

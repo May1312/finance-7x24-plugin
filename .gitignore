@@ -7,3 +7,4 @@ out/
 *.iml
 *.log
 .DS_Store
+.workbuddy/

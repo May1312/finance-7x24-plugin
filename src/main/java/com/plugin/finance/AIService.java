@@ -15,9 +15,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.time.DayOfWeek;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -164,44 +172,254 @@ public class AIService {
 
     /** 分析自选股的系统提示词 */
     public static final String ANALYSIS_SYSTEM_PROMPT =
-                    "你是一个专业A股/证券市场分析师，擅长基于实时行情数据进行技术分析。\n" +
-                    "输出格式要求：\n" +
-                    "【趋势】日内走势强弱判断（高开/低开/平开，K线形态，盘中位置）\n" +
-                    "【关键位】支撑位与压力位（基于今日高低点计算）\n" +
-                    "【操作】买入/持有/卖出/观望，给出具体止损位和目标位\n" +
-                    "【风险】当前风险点提示\n" +
-                    "最后给出组合整体评估（仓位建议、市场情绪、板块联动）。\n" +
-                    "注意：不要使用任何markdown格式（不要加#号、**、*等），纯文本输出。语言专业、数据驱动，直接给结论。注意：以下为分析参考，不构成投资建议。";
+                    "你是一个专业证券分析师，擅长基于实时行情数据进行日内技术分析。\n" +
+                    "【颜色与方向强约束 · 必须遵守，违反将被自动纠正】\n" +
+                    "① 「收红/收绿」**唯一依据**是行情上下文里「涨跌幅」字段的正负号；涨跌幅为正=收红、为负=收绿、为零=平盘。**禁止**根据「弱势」「强势」「无反弹动力」等叙事措辞自行判定颜色。\n" +
+                    "② 「阳线/阴线」= 现价相对昨收（与涨跌幅等价），列表里报的「涨跌幅」字段即表达这一关系，「K线 阳线」=收红、「K线 阴线」=收绿，二者**绝对不能同时与涨跌幅矛盾**。\n" +
+                    "③ 每只股票点评开头**必须**先点明收红/收绿（例：「目前收红…」/「今日收绿…」），再谈形态。\n" +
+                    "④ 「今日/目前」措辞**唯一依据**是上下文首部「市场状态」字段：该市场已收盘/未开盘/周末休市 → 数据即收盘定格，用「今日收红/今日收绿」定论表述；该市场盘中（含午间休市）→ 用「目前收红/目前收绿」暂态表述，涨跌幅在±0.5%以内时必须提示方向收盘前仍可能翻转。\n" +
+                    "⑤ 「收绿日」**禁止**使用「低开高走」「强势反弹」「多头占优」等诱导看多措辞；若当日确实日内反弹，必须明确写「日内反弹但仍收绿」/「收盘仍为负」，与列表方向一致。\n" +
+                    "⑥ 所有结论**只能**基于上下文提供的数据；未提供的字段（如成交量、个股均线的品种）不得提及或编造，「日内低开X%」这类未给出的数值不得自行编造。\n" +
+                    "数据说明：行情上下文首部附「数据时间」（北京时间）与「市场状态」（盘中/已收盘/未开盘等，已按各市场交易时段计算）。你掌握每只股票当日日内数据（今开、昨收、最高、最低、现价、振幅、日内位置、距开盘涨幅、较昨收开缺口幅），多数股票附有均线数据（MA5/MA10/MA20/MA60、现价较MA20乖离、5日涨跌）。\n" +
+                    "分析视角：默认以均值回归为主——大涨警惕追高回调，大跌关注超卖反弹，避免追涨杀跌；现价大幅偏离MA20（乖离过大）时回归压力增大。但若日内单边走强、现价处于日内高位且站在均线上方，需提示趋势延续的可能，不强行套用回调逻辑。\n" +
+                    "涨跌幅极端程度需按品种判断：A股主板±10%、创业板/科创板±20%涨跌停制度内判断；港美股、黄金无涨跌停，按该品种日常波动特性判断（美股大盘股日内3%已属显著，黄金1%即显著）。\n" +
+                    "输出格式要求（纯文本，不用markdown，不用#号、**、*）：\n" +
+                    "每只股票用【股票名(代码)】开头，2-3行精炼点评，依次覆盖：\n" +
+                    "【趋势】日内强弱与位置（高开/低开、距开盘涨幅、日内位置高低、收红或收绿）\n" +
+                    "【信号】是否处于极端区域及方向（超买警惕回调/超卖关注反弹/趋势延续/震荡区间，结合MA20乖离与5日涨跌判断）\n" +
+                    "【操作】给出明确建议（高抛/低吸/持有/观望/区间操作）和具体目标位、止损位\n" +
+                    "【风险】仅在该股有特殊风险点时输出一行，无则省略\n" +
+                    "最后给出组合整体评估，不超过5行：仓位建议、市场情绪、当前是否适合左侧布局。\n" +
+                    "语言专业、数据驱动、直接给结论。注意：以下为分析参考，不构成投资建议。";
 
     /** 构建自选股行情上下文（供 UI 展示与调用分析共用） */
     public static String buildMarketContext(List<QuoteItem> items, String marketName) {
-        StringBuilder context = new StringBuilder("当前市场：").append(marketName).append("\n\n自选股实时行情：\n");
+        return buildMarketContext(items, marketName, Map.of());
+    }
+
+    /** 构建自选股行情上下文（带均线数据，均线缺失的股票不输出均线行） */
+    public static String buildMarketContext(List<QuoteItem> items, String marketName,
+                                            Map<String, QuoteService.MaInfo> maMap) {
+        StringBuilder context = new StringBuilder("当前市场：").append(marketName)
+                .append("\n").append(buildSnapshotHeader(items))
+                .append("\n\n自选股实时行情：\n");
         for (int i = 0; i < items.size(); i++) {
             QuoteItem it = items.get(i);
             double range = it.getHighPrice() - it.getLowPrice();
             double rangePct = range > 0 ? range / it.getClosePrice() * 100 : 0;
             double posInRange = range > 0 ? (it.getPrice() - it.getLowPrice()) / range * 100 : 50;
             double gapFromOpen = it.getOpenPrice() > 0 ? (it.getPrice() - it.getOpenPrice()) / it.getOpenPrice() * 100 : 0;
+            double openGapPct = it.getClosePrice() > 0 ? (it.getOpenPrice() - it.getClosePrice()) / it.getClosePrice() * 100 : 0;
             String candleType = "十字星";
-            if (it.getClosePrice() > it.getOpenPrice()) candleType = "阳线";
-            else if (it.getClosePrice() < it.getOpenPrice()) candleType = "阴线";
-            double bodyPct = range > 0 ? Math.abs(it.getClosePrice() - it.getOpenPrice()) / range * 100 : 0;
+            // K线阳/阴以「现价 vs 昨收」判定（与列表涨跌幅、用户看到的收红/收绿保持一致）：
+            // 收红=阳线、收绿=阴线，避免出现「日线收绿但K线报阳」的方向混淆。
+            // 日内形态（V形/倒V/先抑后扬等）由上下影线与实体比例承载，不靠阳阴表达。
+            if (it.getPrice() > it.getClosePrice()) candleType = "阳线";
+            else if (it.getPrice() < it.getClosePrice()) candleType = "阴线";
+            double bodyPct = range > 0 ? Math.abs(it.getPrice() - it.getOpenPrice()) / range * 100 : 0;
+            double upperShadowPct = range > 0 ? (it.getHighPrice() - Math.max(it.getPrice(), it.getOpenPrice())) / range * 100 : 0;
+            double lowerShadowPct = range > 0 ? (Math.min(it.getPrice(), it.getOpenPrice()) - it.getLowPrice()) / range * 100 : 0;
 
             context.append(i + 1).append(". ").append(it.getName()).append("(").append(it.getCode()).append(")\n")
                     .append("   现价 ").append(it.getPrice())
                     .append("，涨跌幅 ").append(String.format("%+.2f%%", it.getChangePercent()))
                     .append("，涨跌额 ").append(String.format("%+.2f", it.getChangeAmount()))
                     .append("，今开 ").append(it.getOpenPrice())
+                    .append(String.format("(较昨收%+.2f%%)", openGapPct))
                     .append("，昨收 ").append(it.getClosePrice())
                     .append("，最高 ").append(it.getHighPrice())
                     .append("，最低 ").append(it.getLowPrice())
                     .append("，振幅 ").append(String.format("%.2f%%", rangePct))
-                    .append("，K线 ").append(candleType).append(String.format("(实体%.0f", bodyPct)).append("%)")
+                    .append("，K线 ").append(candleType).append(String.format("(实体%.0f%%,上影%.0f%%,下影%.0f%%)", bodyPct, upperShadowPct, lowerShadowPct))
                     .append("，日内位置 ").append(String.format("%.0f%%", posInRange))
                     .append("，距开盘 ").append(String.format("%+.2f%%", gapFromOpen))
                     .append("\n");
+            QuoteService.MaInfo ma = maMap.get(it.getCode());
+            if (ma != null) {
+                context.append("   均线 ");
+                if (ma.ma5 > 0) context.append("MA5 ").append(fmt2(ma.ma5));
+                if (ma.ma10 > 0) context.append("，MA10 ").append(fmt2(ma.ma10));
+                if (ma.ma20 > 0) context.append("，MA20 ").append(fmt2(ma.ma20));
+                if (ma.ma60 > 0) context.append("，MA60 ").append(fmt2(ma.ma60));
+                if (ma.bias20 != 0) context.append("，现价较MA20 ").append(String.format("%+.1f%%", ma.bias20));
+                if (ma.chg5 != 0) context.append("，5日涨跌 ").append(String.format("%+.1f%%", ma.chg5));
+                context.append("\n");
+            }
         }
         return context.toString();
+    }
+
+    private static String fmt2(double v) {
+        return String.format("%.2f", v);
+    }
+
+    private static final String[] WEEK_CN = {"一", "二", "三", "四", "五", "六", "日"};
+
+    /** 数据快照时间与各市场交易状态行（供 AI 区分「今日定论 / 目前暂态」措辞，按各市场交易时段确定性计算） */
+    private static String buildSnapshotHeader(List<QuoteItem> items) {
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
+        StringBuilder sb = new StringBuilder("数据时间：")
+                .append(now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")))
+                .append("(周").append(WEEK_CN[now.getDayOfWeek().getValue() - 1]).append(") ")
+                .append(now.format(DateTimeFormatter.ofPattern("HH:mm")))
+                .append(" 北京时间");
+        LinkedHashSet<String> markets = new LinkedHashSet<>();
+        for (QuoteItem it : items) {
+            String m = marketOf(it.getCode());
+            if (!m.isEmpty()) {
+                markets.add(m);
+            }
+        }
+        if (!markets.isEmpty()) {
+            sb.append("\n市场状态：");
+            boolean first = true;
+            for (String m : markets) {
+                if (!first) {
+                    sb.append("；");
+                }
+                sb.append(m).append("-").append(sessionStatus(m, now));
+                first = false;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 从裸代码推断所属市场（与 QuoteService.parseRequestedCode 的判定口径一致） */
+    private static String marketOf(String code) {
+        String c = code == null ? "" : code.trim().toLowerCase();
+        if (c.isEmpty()) {
+            return "";
+        }
+        if ("xauusd".equals(c) || "hf_xau".equals(c) || "gold".equals(c) || GoldInstrument.fromCode(c) != null) {
+            return "黄金";
+        }
+        if ("hsi".equals(c) || "hscei".equals(c) || "hscci".equals(c)) {
+            return "港股";
+        }
+        if (c.matches("\\d{6}")) {
+            return "A股";
+        }
+        if (c.matches("\\d{5}")) {
+            return "港股";
+        }
+        if (c.matches("[a-z][a-z0-9.]{0,9}")) {
+            return "美股";
+        }
+        return "";
+    }
+
+    /** 按市场交易时段计算状态。A股 9:30-11:30/13:00-15:00，港股 9:30-12:00/13:00-16:00（均为北京时间）；
+     *  美股按美东时间 9:30-16:00（自动处理夏令时）；黄金工作日近似全天。节假日休市无法覆盖，属已知简化。 */
+    private static String sessionStatus(String market, ZonedDateTime bjNow) {
+        DayOfWeek dow = bjNow.getDayOfWeek();
+        boolean weekday = dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
+        int m = bjNow.getHour() * 60 + bjNow.getMinute();
+        switch (market) {
+            case "A股":
+            case "港股": {
+                if (!weekday) {
+                    return "周末休市";
+                }
+                boolean isA = "A股".equals(market);
+                int lunchStart = isA ? 690 : 720;   // A股11:30午休 / 港股12:00午休
+                int close = isA ? 900 : 960;        // A股15:00收盘 / 港股16:00收盘
+                if (m < 570) {
+                    return "未开盘";
+                }
+                if (m < lunchStart) {
+                    return "盘中";
+                }
+                if (m < 780) {
+                    return "午间休市";
+                }
+                if (m < close) {
+                    return "盘中";
+                }
+                return "已收盘";
+            }
+            case "美股": {
+                ZonedDateTime ny = bjNow.withZoneSameInstant(ZoneId.of("America/New_York"));
+                DayOfWeek nd = ny.getDayOfWeek();
+                if (nd == DayOfWeek.SATURDAY || nd == DayOfWeek.SUNDAY) {
+                    return "周末休市";
+                }
+                int nm = ny.getHour() * 60 + ny.getMinute();
+                if (nm < 570) {
+                    return "未开盘(美东)";
+                }
+                if (nm < 960) {
+                    return "盘中(美东)";
+                }
+                return "已收盘(美东)";
+            }
+            default:
+                return weekday ? "交易中" : "周末休市";
+        }
+    }
+
+    /** 后处理兜底：模型偶有违反强约束规则，按确定性数据自动回写——
+     *  ①「今日收红/收绿」按该股票所属市场的「市场状态」回写为「目前/今日」；
+     *  ②「K线 阴线/阳线」与该股票「涨跌幅」符号矛盾时自动纠正。
+     *  仅作用于自选股分析链路（需要每只股票的涨跌幅）。 */
+    private static String enforceConsistency(String text, List<QuoteItem> items) {
+        if (text == null || text.isEmpty() || items == null || items.isEmpty()) {
+            return text;
+        }
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
+        Map<String, Double> chgByCode = new HashMap<>();
+        for (QuoteItem it : items) {
+            chgByCode.put(it.getCode(), it.getChangePercent());
+        }
+        Pattern codeInBrackets = Pattern.compile("\\(([^)]+)\\)");
+
+        // ① 「今日/目前」按市场状态回写（每只股票评论行内）
+        Pattern linePrefix = Pattern.compile("(【[^】]+】[\\s\\S]*?)今日收(红|绿)");
+        Matcher m = linePrefix.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String head = m.group(1);
+            String color = m.group(2);
+            String prefix = "今日";
+            Matcher cm = codeInBrackets.matcher(head);
+            if (cm.find()) {
+                String market = marketOf(cm.group(1));
+                if (!market.isEmpty()) {
+                    String status = sessionStatus(market, now);
+                    // 黄金工作日状态为「交易中」（近似全天），同样属于暂态，需一并回写为「目前」
+                    if (status.contains("盘中") || status.contains("午间") || status.contains("交易中")) {
+                        prefix = "目前";
+                    }
+                }
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(head + prefix + "收" + color));
+        }
+        m.appendTail(sb);
+        String result = sb.toString();
+
+        // ② K线 阴/阳 与涨跌幅符号不一致时纠正
+        Pattern candleLine = Pattern.compile("(【[^】]+】[\\s\\S]*?)K线(阳线|阴线)");
+        Matcher mk = candleLine.matcher(result);
+        StringBuilder sbk = new StringBuilder();
+        while (mk.find()) {
+            String head = mk.group(1);
+            String candle = mk.group(2);
+            String correctCandle = candle;
+            Matcher cm = codeInBrackets.matcher(head);
+            if (cm.find()) {
+                Double pct = chgByCode.get(cm.group(1));
+                if (pct != null && pct != 0) {
+                    boolean shouldYang = pct > 0;
+                    if (shouldYang && "阴线".equals(candle)) {
+                        correctCandle = "阳线";
+                    } else if (!shouldYang && "阳线".equals(candle)) {
+                        correctCandle = "阴线";
+                    }
+                }
+            }
+            mk.appendReplacement(sbk, Matcher.quoteReplacement(head + "K线" + correctCandle));
+        }
+        mk.appendTail(sbk);
+        return sbk.toString();
     }
 
     /** 异步分析自选股行情 */
@@ -213,10 +431,20 @@ public class AIService {
                 PluginLog.info("[AIService] analyzeWatchlistAsync FAIL: items empty");
                 return "暂无自选股可分析";
             }
-            String context = buildMarketContext(items, marketName);
+            // 拉取日K均线（专用线程池并行，逐只失败自动降级为无均线行）
+            Map<String, QuoteService.MaInfo> maMap;
+            try {
+                maMap = new QuoteService().fetchMaInfos(items);
+                PluginLog.info("[AIService] fetchMaInfos done, ma_count=" + maMap.size() + "/" + items.size());
+            } catch (Exception e) {
+                PluginLog.error("[AIService] fetchMaInfos failed, fallback to no-MA context", e);
+                maMap = Map.of();
+            }
+            String context = buildMarketContext(items, marketName, maMap);
             PluginLog.info("[AIService] analyzeWatchlistAsync calling callModel, context_len=" + context.length());
             String result = callModel(ANALYSIS_SYSTEM_PROMPT,
                 "请分析以下自选股行情，逐只给出点评和操作建议：\n\n" + context);
+            result = enforceConsistency(result, items);
             PluginLog.info("[AIService] analyzeWatchlistAsync DONE, result_len=" +
                 (result != null ? result.length() : 0) + ", preview=" +
                 (result != null ? result.substring(0, Math.min(80, result.length())) : "null"));
@@ -389,6 +617,6 @@ public class AIService {
                 .replaceAll("\\*([^*]+)\\*", "$1")
                 .replaceAll("`([^`]+)`", "$1")
                 .replaceAll("(?m)^#{1,6}\\s+", "")
-                .replaceAll("\\n{3,}", "\n\n");
+                .replaceAll("\n{3,}", "\n\n");
     }
 }
