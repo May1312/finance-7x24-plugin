@@ -173,14 +173,18 @@ public class AIService {
     /** 分析自选股的系统提示词 */
     public static final String ANALYSIS_SYSTEM_PROMPT =
                     "你是一个专业证券分析师，擅长基于实时行情数据进行日内技术分析。\n" +
-                    "【颜色与方向强约束 · 必须遵守，违反将被自动纠正】\n" +
-                    "① 「收红/收绿」**唯一依据**是行情上下文里「涨跌幅」字段的正负号；涨跌幅为正=收红、为负=收绿、为零=平盘。**禁止**根据「弱势」「强势」「无反弹动力」等叙事措辞自行判定颜色。\n" +
-                    "② 「阳线/阴线」= 现价相对昨收（与涨跌幅等价），列表里报的「涨跌幅」字段即表达这一关系，「K线 阳线」=收红、「K线 阴线」=收绿，二者**绝对不能同时与涨跌幅矛盾**。\n" +
-                    "③ 每只股票点评开头**必须**先点明收红/收绿（例：「目前收红…」/「今日收绿…」），再谈形态。\n" +
-                    "④ 「今日/目前」措辞**唯一依据**是上下文首部「市场状态」字段：该市场已收盘/未开盘/周末休市 → 数据即收盘定格，用「今日收红/今日收绿」定论表述；该市场盘中（含午间休市）→ 用「目前收红/目前收绿」暂态表述，涨跌幅在±0.5%以内时必须提示方向收盘前仍可能翻转。\n" +
+                    "【颜色与方向 + 分析阶段强约束 · 必须遵守，违反将被自动纠正】\n" +
+                    "分析阶段（**唯一依据** = 上下文首部「市场状态」字段分三阶段）：\n" +
+                    "· **盘后**（已收盘/周末休市等）→ 数据即收盘定格，用「今日收红/今日收绿/今日收平」定论表述，分析侧重今日定论 + 次日展望；\n" +
+                    "· **盘中**（集合竞价、开盘准备、盘中早盘/午盘、午间休市、夜盘等交易进行时段）→ 用「目前收红/目前收绿/目前收平」暂态表述，涨跌幅绝对值<0.5%时必须提示方向收盘前仍可能变化，分析侧重实时强弱 + 当前位置 + 关键位；\n" +
+                    "· **盘前**（开盘前）→ 数据是上一交易日收盘，用「昨日收红/昨日收绿/昨日收平」表述，分析侧重昨日复盘 + 今日开盘预期/外围情绪/关键位。\n" +
+                    "① 「收红/收绿/收平」**唯一依据**是行情上下文里「涨跌幅」字段：涨跌幅>0=收红、<0=收绿、绝对值<0.05%=收平/平盘。**禁止**根据「弱势」「强势」「无反弹动力」等叙事措辞自行判定颜色。\n" +
+                    "② 「阳线/阴线/十字星」= 现价相对昨收：现价>昨收=阳线（对应收红）、<昨收=阴线（对应收绿）、≈昨收=十字星（对应收平）。列表里报的「涨跌幅」字段即表达这一关系，**阳/阴/十字 三者不能与涨跌幅符号矛盾**。\n" +
+                    "③ 每只股票点评开头**必须**先点明颜色（例：「今日收绿…」/「目前收红…」/「昨日收平…」），再谈形态。\n" +
+                    "④ 「今日/目前/昨日」措辞**必须**与上述三阶段一致：盘前→「昨日」、盘中→「目前」、盘后→「今日」，不得混用。\n" +
                     "⑤ 「收绿日」**禁止**使用「低开高走」「强势反弹」「多头占优」等诱导看多措辞；若当日确实日内反弹，必须明确写「日内反弹但仍收绿」/「收盘仍为负」，与列表方向一致。\n" +
                     "⑥ 所有结论**只能**基于上下文提供的数据；未提供的字段（如成交量、个股均线的品种）不得提及或编造，「日内低开X%」这类未给出的数值不得自行编造。\n" +
-                    "数据说明：行情上下文首部附「数据时间」（北京时间）与「市场状态」（盘中/已收盘/未开盘等，已按各市场交易时段计算）。你掌握每只股票当日日内数据（今开、昨收、最高、最低、现价、振幅、日内位置、距开盘涨幅、较昨收开缺口幅），多数股票附有均线数据（MA5/MA10/MA20/MA60、现价较MA20乖离、5日涨跌）。\n" +
+                    "数据说明：行情上下文首部附「数据时间」（北京时间）与「市场状态」（盘前/集合竞价/盘中(早盘/午盘)/午间休市/盘后/夜盘等子状态，按各市场交易时段计算）。你掌握每只股票当日日内数据（今开、昨收、最高、最低、现价、振幅、日内位置、距开盘涨幅、较昨收开缺口幅），多数股票附有均线数据（MA5/MA10/MA20/MA60、现价较MA20乖离、5日涨跌）。\n" +
                     "分析视角：默认以均值回归为主——大涨警惕追高回调，大跌关注超卖反弹，避免追涨杀跌；现价大幅偏离MA20（乖离过大）时回归压力增大。但若日内单边走强、现价处于日内高位且站在均线上方，需提示趋势延续的可能，不强行套用回调逻辑。\n" +
                     "涨跌幅极端程度需按品种判断：A股主板±10%、创业板/科创板±20%涨跌停制度内判断；港美股、黄金无涨跌停，按该品种日常波动特性判断（美股大盘股日内3%已属显著，黄金1%即显著）。\n" +
                     "输出格式要求（纯文本，不用markdown，不用#号、**、*）：\n" +
@@ -308,57 +312,65 @@ public class AIService {
         return "";
     }
 
-    /** 按市场交易时段计算状态。A股 9:30-11:30/13:00-15:00，港股 9:30-12:00/13:00-16:00（均为北京时间）；
-     *  美股按美东时间 9:30-16:00（自动处理夏令时）；黄金工作日近似全天。节假日休市无法覆盖，属已知简化。 */
+    /** 按市场交易时段计算状态。返回三阶段子状态：盘前 / 集合竞价 / 盘中(早盘/午盘) / 午间休市 / 盘后 / 夜盘 等。
+     *  A股 9:00 盘前 / 9:15-9:25 集合竞价 / 9:25-9:30 开盘准备 / 9:30-11:30 早盘 / 11:30-13:00 午间休市 / 13:00-15:00 午盘 / 15:00 后盘后
+     *  港股 9:30 盘前 / 9:30-12:00 早盘 / 12:00-13:00 午间休市 / 13:00-16:00 午盘 / 16:00 后盘后
+     *  美股按美东时间（自动处理夏令时）：盘前(4:00-9:30) / 盘中(9:30-16:00) / 盘后(16:00-20:00) / 夜盘(20:00-4:00)
+     *  伦敦金 周一 7:00 - 周六 4:00 为盘中，周六 4:00 - 周一 7:00 为周末休市/盘前。
+     *  节假日休市未覆盖，属已知简化。 */
     private static String sessionStatus(String market, ZonedDateTime bjNow) {
         DayOfWeek dow = bjNow.getDayOfWeek();
         boolean weekday = dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
         int m = bjNow.getHour() * 60 + bjNow.getMinute();
         switch (market) {
             case "A股":
-            case "港股": {
-                if (!weekday) {
-                    return "周末休市";
-                }
-                boolean isA = "A股".equals(market);
-                int lunchStart = isA ? 690 : 720;   // A股11:30午休 / 港股12:00午休
-                int close = isA ? 900 : 960;        // A股15:00收盘 / 港股16:00收盘
-                if (m < 570) {
-                    return "未开盘";
-                }
-                if (m < lunchStart) {
-                    return "盘中";
-                }
-                if (m < 780) {
-                    return "午间休市";
-                }
-                if (m < close) {
-                    return "盘中";
-                }
-                return "已收盘";
-            }
+                if (!weekday) return "周末休市";
+                if (m < 540) return "盘前";             // < 9:00
+                if (m < 555) return "盘前";             // 9:00-9:15
+                if (m < 565) return "集合竞价";         // 9:15-9:25
+                if (m < 570) return "开盘准备";         // 9:25-9:30
+                if (m < 690) return "盘中(早盘)";       // 9:30-11:30
+                if (m < 780) return "午间休市";         // 11:30-13:00
+                if (m < 900) return "盘中(午盘)";       // 13:00-15:00
+                return "盘后";                           // 15:00 后
+            case "港股":
+                if (!weekday) return "周末休市";
+                if (m < 570) return "盘前";             // < 9:30
+                if (m < 720) return "盘中(早盘)";       // 9:30-12:00
+                if (m < 780) return "午间休市";         // 12:00-13:00
+                if (m < 960) return "盘中(午盘)";       // 13:00-16:00
+                return "盘后";                           // 16:00 后
             case "美股": {
                 ZonedDateTime ny = bjNow.withZoneSameInstant(ZoneId.of("America/New_York"));
                 DayOfWeek nd = ny.getDayOfWeek();
-                if (nd == DayOfWeek.SATURDAY || nd == DayOfWeek.SUNDAY) {
+                if (nd == DayOfWeek.SATURDAY || nd == DayOfWeek.SUNDAY) return "周末休市";
+                int nm = ny.getHour() * 60 + ny.getMinute();
+                if (nm < 240) return "夜盘(美东)";      // 0:00-4:00 ET
+                if (nm < 570) return "盘前(美东)";      // 4:00-9:30 ET
+                if (nm < 960) return "盘中(美东)";      // 9:30-16:00 ET
+                return "盘后(美东)";                     // 16:00-24:00 ET
+            }
+            default: // 黄金（伦敦金 / 现货黄金）
+                if (dow == DayOfWeek.SATURDAY) {
+                    if (m < 240) return "盘中(伦敦金)"; // 周六 04:00 前仍交易中
                     return "周末休市";
                 }
-                int nm = ny.getHour() * 60 + ny.getMinute();
-                if (nm < 570) {
-                    return "未开盘(美东)";
-                }
-                if (nm < 960) {
-                    return "盘中(美东)";
-                }
-                return "已收盘(美东)";
-            }
-            default:
-                return weekday ? "交易中" : "周末休市";
+                if (dow == DayOfWeek.SUNDAY) return "周末休市";
+                if (dow == DayOfWeek.MONDAY && m < 420) return "盘前(伦敦金)"; // 周一 07:00 前
+                return "盘中(伦敦金)";
         }
     }
 
+    /** 将子状态归类到三阶段：盘前 / 盘中 / 盘后（盘后含已收盘、周末休市）。 */
+    private static String stageClass(String status) {
+        if (status == null || status.isEmpty()) return "盘后";
+        if (status.startsWith("盘前") || status.startsWith("集合竞价") || status.startsWith("开盘准备")) return "盘前";
+        if (status.startsWith("盘中") || status.startsWith("午间") || status.startsWith("夜盘")) return "盘中";
+        return "盘后";
+    }
+
     /** 后处理兜底：模型偶有违反强约束规则，按确定性数据自动回写——
-     *  ①「今日收红/收绿」按该股票所属市场的「市场状态」回写为「目前/今日」；
+     *  ①按市场三阶段改写「今日/目前/昨日」：盘前「今日」→「昨日」、盘中「今日」→「目前」、盘后保持；
      *  ②「K线 阴线/阳线」与该股票「涨跌幅」符号矛盾时自动纠正。
      *  仅作用于自选股分析链路（需要每只股票的涨跌幅）。 */
     private static String enforceConsistency(String text, List<QuoteItem> items) {
@@ -372,32 +384,35 @@ public class AIService {
         }
         Pattern codeInBrackets = Pattern.compile("\\(([^)]+)\\)");
 
-        // ① 「今日/目前」按市场状态回写（每只股票评论行内）
-        Pattern linePrefix = Pattern.compile("(【[^】]+】[\\s\\S]*?)今日收(红|绿)");
+        // ① 按三阶段改写「今日/目前/昨日」：盘前→「昨日」、盘中→「目前」、盘后保持「今日」
+        Pattern linePrefix = Pattern.compile("(【[^】]+】[\\s\\S]*?)(今日|目前|昨日)收(红|绿)");
         Matcher m = linePrefix.matcher(text);
         StringBuilder sb = new StringBuilder();
         while (m.find()) {
             String head = m.group(1);
-            String color = m.group(2);
-            String prefix = "今日";
+            String oldPrefix = m.group(2);
+            String color = m.group(3);
+            String newPrefix = oldPrefix;
             Matcher cm = codeInBrackets.matcher(head);
             if (cm.find()) {
                 String market = marketOf(cm.group(1));
                 if (!market.isEmpty()) {
-                    String status = sessionStatus(market, now);
-                    // 黄金工作日状态为「交易中」（近似全天），同样属于暂态，需一并回写为「目前」
-                    if (status.contains("盘中") || status.contains("午间") || status.contains("交易中")) {
-                        prefix = "目前";
+                    String stage = stageClass(sessionStatus(market, now));
+                    if ("盘前".equals(stage) && "今日".equals(oldPrefix)) {
+                        newPrefix = "昨日";
+                    } else if ("盘中".equals(stage) && "今日".equals(oldPrefix)) {
+                        newPrefix = "目前";
                     }
+                    // 盘后保持「今日」不变
                 }
             }
-            m.appendReplacement(sb, Matcher.quoteReplacement(head + prefix + "收" + color));
+            m.appendReplacement(sb, Matcher.quoteReplacement(head + newPrefix + "收" + color));
         }
         m.appendTail(sb);
         String result = sb.toString();
 
-        // ② K线 阴/阳 与涨跌幅符号不一致时纠正
-        Pattern candleLine = Pattern.compile("(【[^】]+】[\\s\\S]*?)K线(阳线|阴线)");
+        // ② K线 阳/阴/十字星 与涨跌幅符号不一致时纠正（含平盘→十字星）
+        Pattern candleLine = Pattern.compile("(【[^】]+】[\\s\\S]*?)K线(阳线|阴线|十字星)");
         Matcher mk = candleLine.matcher(result);
         StringBuilder sbk = new StringBuilder();
         while (mk.find()) {
@@ -407,13 +422,12 @@ public class AIService {
             Matcher cm = codeInBrackets.matcher(head);
             if (cm.find()) {
                 Double pct = chgByCode.get(cm.group(1));
-                if (pct != null && pct != 0) {
-                    boolean shouldYang = pct > 0;
-                    if (shouldYang && "阴线".equals(candle)) {
-                        correctCandle = "阳线";
-                    } else if (!shouldYang && "阳线".equals(candle)) {
-                        correctCandle = "阴线";
-                    }
+                if (pct != null && Math.abs(pct) < 0.05) {
+                    if (!"十字星".equals(candle)) correctCandle = "十字星";
+                } else if (pct != null && pct > 0) {
+                    if ("阴线".equals(candle)) correctCandle = "阳线";
+                } else if (pct != null && pct < 0) {
+                    if ("阳线".equals(candle)) correctCandle = "阴线";
                 }
             }
             mk.appendReplacement(sbk, Matcher.quoteReplacement(head + "K线" + correctCandle));
