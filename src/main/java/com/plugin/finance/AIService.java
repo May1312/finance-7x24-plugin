@@ -466,19 +466,68 @@ public class AIService {
         }, SHARED_EXECUTOR);
     }
 
-    /** 异步聊天：带多轮对话历史，支持追问 */
+    /** 异步聊天：带多轮对话历史，支持追问。
+     *  跨轮一致性：自动从最近一条含品种操作结论的 assistant 消息提取「上一轮结论基线」注入 system prompt，
+     *  约束本轮结论不得无依据推翻基线，推翻时必须说明数据/信号变化原因。 */
     public CompletableFuture<String> chatAsync(String systemPrompt, List<String> history) {
         // 在调用线程做 snapshot，避免后续修改导致 ConcurrentModificationException
         final List<String> snapshot = new ArrayList<>(history);
+        final String sys = appendBaseline(systemPrompt, snapshot);
         return CompletableFuture.supplyAsync(() -> {
             JsonArray messages = new JsonArray();
-            messages.add(buildMessage("system", systemPrompt));
+            messages.add(buildMessage("system", sys));
             for (int i = 0; i < snapshot.size(); i++) {
                 String role = (i % 2 == 0) ? "user" : "assistant";
                 messages.add(buildMessage(role, snapshot.get(i)));
             }
             return callModel(messages);
         }, SHARED_EXECUTOR);
+    }
+
+    /** 提取上一轮结论基线并拼接到 system prompt；无可用基线时原样返回 */
+    static String appendBaseline(String systemPrompt, List<String> history) {
+        String baseline = extractBaseline(history);
+        if (baseline.isEmpty()) {
+            return systemPrompt;
+        }
+        return systemPrompt + "\n\n【上一轮结论基线 · 跨轮一致性约束】\n" + baseline +
+                "本轮对上述品种给出的操作建议：若数据与上一轮基本一致，应保持基线结论；若要推翻基线，必须先明确说明「较上一轮的变化原因」（如跌破/突破关键位、均线信号改变、涨跌幅显著变化），不得无依据推翻；同一轮回答内不得同时出现相互矛盾的操作建议。";
+    }
+
+    /** 从对话历史中倒序查找最近一条含【品种】+操作结论的 assistant 消息，逐品种提取操作建议。
+     *  history 下标偶数为 user、奇数为 assistant（与 chatAsync 的角色分配一致）。 */
+    static String extractBaseline(List<String> history) {
+        if (history == null || history.size() < 2) {
+            return "";
+        }
+        Pattern block = Pattern.compile("(【[^】]+】)([\\s\\S]*?)(?=【[^】]+】|$)");
+        Pattern op = Pattern.compile("操作[】:：]?\\s*([^\\n。；;]{2,80})");
+        for (int i = history.size() - 1; i >= 1; i -= 2) {
+            String msg = history.get(i);
+            if (msg == null || !msg.contains("【")) {
+                continue;
+            }
+            StringBuilder sb = new StringBuilder();
+            Matcher blk = block.matcher(msg);
+            while (blk.find()) {
+                String name = blk.group(1).trim();
+                String body = blk.group(2);
+                if (name.isEmpty()) {
+                    continue;
+                }
+                Matcher om = op.matcher(body);
+                if (om.find()) {
+                    String advice = om.group(1).trim();
+                    if (!advice.isEmpty()) {
+                        sb.append("- ").append(name).append(" 操作：").append(advice).append("\n");
+                    }
+                }
+            }
+            if (sb.length() > 0) {
+                return sb.toString();
+            }
+        }
+        return "";
     }
 
     private JsonObject buildMessage(String role, String content) {

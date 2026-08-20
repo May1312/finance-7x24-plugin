@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.0.1</version>
+    <version>2.0.2</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
@@ -16,15 +16,7 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>新增：AI 分析接入日K均线数据（MA5/MA10/MA20/MA60、现价较MA20乖离、5日涨跌），逐只并行拉取，失败自动降级为无均线</li>
-            <li>新增：分析阶段三态细分——盘前/盘中/盘后（含集合竞价、午间休市、夜盘等子状态），AI 按阶段采用「昨日/目前/今日」措辞并匹配分析侧重</li>
-            <li>新增：AI 输出确定性后处理——「昨日/目前/今日」按市场阶段回写，K线阳/阴/十字星按涨跌幅符号自动纠正</li>
-            <li>优化：颜色判定三态化（收红/收绿/收平），消除平盘时规则冲突导致的模型循环输出</li>
-            <li>优化：分析提示词强化——均值回归视角、按品种判断涨跌幅极端度、禁止编造未提供数据</li>
-            <li>修复：盘中 K 线阴阳线误用昨收判定，与列表红绿显示矛盾的问题</li>
-            <li>修复：科创板股票搜索不到的问题</li>
-            <li>修复：港股指数均线数据误走美股接口的问题</li>
-            <li>优化：均线拉取改用专用线程池，不再占用 JVM 公共 ForkJoinPool</li>
+            <li>新增：AI 分析跨轮一致性——追问时自动提取上一轮各品种操作结论作为基线注入对话，数据未变时保持结论一致，推翻须说明变化原因，同一轮内不得自相矛盾</li>
         </ul>
     ]]></change-notes>
 
