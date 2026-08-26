@@ -22,7 +22,7 @@ public class AISettingsDialog extends JDialog {
     private final Project project;
     private final JComboBox<String> providerCombo;
     private final JComboBox<String> modelCombo;
-    private final JTextField keyField;
+    private final JPasswordField keyField;
     private final JLabel helpLabel;
     private String currentUrl = "";
 
@@ -79,7 +79,7 @@ public class AISettingsDialog extends JDialog {
         keyLabel.setFont(JBFont.label());
         keyLabel.setPreferredSize(new Dimension(55, 28));
         keyPanel.add(keyLabel, BorderLayout.WEST);
-        keyField = new JTextField();
+        keyField = new JPasswordField();
         keyField.setFont(JBFont.label().deriveFont(13f));
         keyField.setColumns(18);
         keyField.setBorder(null);
@@ -127,7 +127,7 @@ public class AISettingsDialog extends JDialog {
         okBtn.setPreferredSize(new Dimension(60, 28));
         okBtn.setDefaultCapable(false);
         okBtn.addActionListener(e -> {
-            userApiKey = keyField.getText().trim();
+            userApiKey = currentKeyInput();
             userModelId = getSelectedModelId();
             String provider = AIService.MODELS.get(userModelId).provider;
             AIService.saveConfig(provider, userApiKey);
@@ -165,9 +165,9 @@ public class AISettingsDialog extends JDialog {
         String provider = (String) providerCombo.getSelectedItem();
         // 刷新模型下拉
         refreshModelCombo();
-        // 从文件加载该厂商保存的 key
-        String savedKey = loadKeyFromFile(provider);
-        keyField.setText(savedKey);
+        // 从系统钥匙串异步加载该厂商保存的 key（首次访问可能弹授权框，不能阻塞 EDT）
+        keyField.setText("");
+        loadKeyFromFile(provider);
         // 更新申请地址（只 URL 可点击，后面跟操作步骤）
         AIService.ProviderInfo info = AIService.PROVIDER_INFO.get(provider);
         if (info != null) {
@@ -183,9 +183,14 @@ public class AISettingsDialog extends JDialog {
         }
     }
 
-    /** 从文件加载指定厂商的 key */
-    private String loadKeyFromFile(String provider) {
-        return AIService.loadApiKey(provider);
+    /** 异步加载指定厂商的 key 并回填输入框；回填时校验厂商未被切换，避免旧结果覆盖新选择 */
+    private void loadKeyFromFile(String provider) {
+        AIService.loadApiKeyAsync(provider).thenAccept(savedKey ->
+                SwingUtilities.invokeLater(() -> {
+                    if (provider.equals(providerCombo.getSelectedItem())) {
+                        keyField.setText(savedKey);
+                    }
+                }));
     }
 
     private void refreshModelCombo() {
@@ -244,8 +249,16 @@ public class AISettingsDialog extends JDialog {
         return AIService.MODELS.keySet().iterator().next();
     }
 
+    /** 读取 Key 输入框内容（JPasswordField 需经 getPassword 读取） */
+    private String currentKeyInput() {
+        char[] chars = keyField.getPassword();
+        String text = new String(chars).trim();
+        java.util.Arrays.fill(chars, '\0');
+        return text;
+    }
+
     private void testConnection() {
-        String key = keyField.getText().trim();
+        String key = currentKeyInput();
         if (key.isEmpty()) {
             Messages.showWarningDialog("请输入 API Key", "测试连接失败");
             return;

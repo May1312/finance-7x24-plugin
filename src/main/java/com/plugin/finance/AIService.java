@@ -3,6 +3,10 @@ package com.plugin.finance;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.intellij.credentialStore.CredentialAttributes;
+import com.intellij.credentialStore.CredentialAttributesKt;
+import com.intellij.credentialStore.Credentials;
+import com.intellij.ide.passwordSafe.PasswordSafe;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -27,6 +31,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -99,54 +104,136 @@ public class AIService {
         PROVIDER_MODELS.computeIfAbsent(provider, k -> new ArrayList<>()).add(info);
     }
 
-    /** 获取指定厂商的存储 key 名称 */
-    public static String providerKeyProperty(String provider) {
-        return "finance.ai.key." + provider;
+    // ── API Key 持久化 ──
+    // Key 存入 IDE 的 PasswordSafe（macOS 钥匙串 / Windows 凭据管理器 / KeePass），不再明文落盘。
+    // 旧版本明文存于 ~/.finance7x24_ai_config.json，首次读取时自动迁移并从该文件中剔除。
+
+    private static final String LEGACY_CONFIG_FILE = System.getProperty("user.home") + "/.finance7x24_ai_config.json";
+    private static final String CREDENTIAL_SUBSYSTEM = "Finance7x24AI";
+    private static final Gson GSON = new Gson();
+    /** 缓存已读取的 Key，避免每次刷新都访问系统钥匙串（EDT 上可能较慢） */
+    private static final Map<String, String> KEY_CACHE = new ConcurrentHashMap<>();
+
+    private static CredentialAttributes credentialAttributes(String provider) {
+        return new CredentialAttributes(
+                CredentialAttributesKt.generateServiceName(CREDENTIAL_SUBSYSTEM, provider), provider);
     }
 
-    // ── 配置持久化（统一入口，消除重复代码） ──
-
-    private static final String CONFIG_FILE = System.getProperty("user.home") + "/.finance7x24_ai_config.json";
-    private static final Gson GSON = new Gson();
-
-    /** 读取整个配置 JSON 对象 */
-    public static JsonObject loadConfigObject() {
+    /** 保存指定厂商的 API Key；传入空串等于清除该厂商的凭据 */
+    public static void saveConfig(String provider, String apiKey) {
+        if (provider == null || provider.isEmpty()) {
+            return;
+        }
+        String key = apiKey == null ? "" : apiKey;
         try {
-            Path path = Paths.get(CONFIG_FILE);
+            PasswordSafe.getInstance().set(credentialAttributes(provider),
+                    key.isEmpty() ? null : new Credentials(provider, key));
+            KEY_CACHE.put(provider, key);
+        } catch (Exception e) {
+            PluginLog.error("[AIService] 保存 API Key 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 加载指定厂商的 API Key；旧版明文配置在此一次性迁移到 PasswordSafe */
+    public static String loadApiKey(String provider) {
+        if (provider == null || provider.isEmpty()) {
+            return "";
+        }
+        String cached = KEY_CACHE.get(provider);
+        if (cached != null) {
+            return cached;
+        }
+        String key = "";
+        try {
+            String stored = PasswordSafe.getInstance().getPassword(credentialAttributes(provider));
+            if (stored != null) {
+                key = stored;
+            }
+        } catch (Exception e) {
+            PluginLog.error("[AIService] 读取 API Key 失败: " + e.getMessage(), e);
+        }
+        if (key.isEmpty()) {
+            key = migrateLegacyKey(provider);
+        }
+        KEY_CACHE.put(provider, key);
+        return key;
+    }
+
+    /** 异步加载 API Key：首次访问系统钥匙串可能弹授权框或耗时数百毫秒，不应在 EDT 上同步执行。
+     *  已缓存时立即返回已完成的 future，调用方仍可统一走回调。 */
+    public static CompletableFuture<String> loadApiKeyAsync(String provider) {
+        if (provider == null || provider.isEmpty()) {
+            return CompletableFuture.completedFuture("");
+        }
+        String cached = KEY_CACHE.get(provider);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(cached);
+        }
+        return CompletableFuture.supplyAsync(() -> loadApiKey(provider), SHARED_EXECUTOR);
+    }
+
+    /** 从旧版明文文件取出该厂商的 Key，迁移进 PasswordSafe 并从文件中删除；无旧数据时返回空串 */
+    private static String migrateLegacyKey(String provider) {
+        JsonObject config = loadLegacyConfig();
+        String field = "key_" + provider;
+        String legacy = "";
+        if (config.has(field) && !config.get(field).isJsonNull()) {
+            legacy = config.get(field).getAsString();
+        } else if (config.has("key") && !config.get("key").isJsonNull()
+                && config.has("provider") && !config.get("provider").isJsonNull()
+                && provider.equals(config.get("provider").getAsString())) {
+            // 兼容更早的单 key 格式
+            legacy = config.get("key").getAsString();
+            field = "key";
+        }
+        if (legacy.isEmpty()) {
+            return "";
+        }
+        try {
+            PasswordSafe.getInstance().set(credentialAttributes(provider), new Credentials(provider, legacy));
+            config.remove(field);
+            rewriteLegacyConfig(config);
+            PluginLog.info("[AIService] 已将 " + provider + " 的 API Key 迁移到 PasswordSafe");
+        } catch (Exception e) {
+            PluginLog.error("[AIService] 迁移 API Key 失败: " + e.getMessage(), e);
+        }
+        return legacy;
+    }
+
+    /** 读取旧版明文配置文件（仅用于迁移） */
+    private static JsonObject loadLegacyConfig() {
+        try {
+            Path path = Paths.get(LEGACY_CONFIG_FILE);
             if (Files.exists(path)) {
-                String json = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-                JsonObject obj = GSON.fromJson(json, JsonObject.class);
+                JsonObject obj = GSON.fromJson(
+                        new String(Files.readAllBytes(path), StandardCharsets.UTF_8), JsonObject.class);
                 return obj != null ? obj : new JsonObject();
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            PluginLog.info("[AIService] 读取旧配置文件失败: " + e.getMessage());
         }
         return new JsonObject();
     }
 
-    /** 保存指定厂商的 API Key（保留其他厂商的 key） */
-    public static void saveConfig(String provider, String apiKey) {
-        JsonObject config = loadConfigObject();
-        config.addProperty("provider", provider);
-        config.addProperty("key_" + provider, apiKey);
+    /** 迁移后回写旧配置文件；已无残留 Key 时直接删除该文件 */
+    private static void rewriteLegacyConfig(JsonObject config) {
         try {
-            Files.write(Paths.get(CONFIG_FILE),
-                    GSON.toJson(config).getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignored) {
+            Path path = Paths.get(LEGACY_CONFIG_FILE);
+            boolean hasRemainingKey = false;
+            for (String name : config.keySet()) {
+                if ("key".equals(name) || name.startsWith("key_")) {
+                    hasRemainingKey = true;
+                    break;
+                }
+            }
+            if (hasRemainingKey) {
+                Files.write(path, GSON.toJson(config).getBytes(StandardCharsets.UTF_8));
+            } else {
+                Files.deleteIfExists(path);
+            }
+        } catch (Exception e) {
+            PluginLog.info("[AIService] 清理旧配置文件失败: " + e.getMessage());
         }
-    }
-
-    /** 加载指定厂商的 API Key */
-    public static String loadApiKey(String provider) {
-        JsonObject config = loadConfigObject();
-        if (config.has("key_" + provider)) {
-            return config.get("key_" + provider).getAsString();
-        }
-        // 兼容旧格式（无 provider 字段，单 key）
-        if (config.has("key") && config.has("provider")
-                && config.get("provider").getAsString().equals(provider)) {
-            return config.get("key").getAsString();
-        }
-        return "";
     }
 
     // ── 实例字段 ──
@@ -484,47 +571,91 @@ public class AIService {
         }, SHARED_EXECUTOR);
     }
 
-    /** 提取上一轮结论基线并拼接到 system prompt；无可用基线时原样返回 */
+    /** 提取上一轮结论基线并以最高优先级前置注入 system prompt；无可用基线时原样返回。
+     *  前置（而非追加在末尾）确保基线不被后续长规则淹没；检测到用户质疑时注入「视角质疑≠新数据」辩护指引。 */
     static String appendBaseline(String systemPrompt, List<String> history) {
         String baseline = extractBaseline(history);
         if (baseline.isEmpty()) {
             return systemPrompt;
         }
-        return systemPrompt + "\n\n【上一轮结论基线 · 跨轮一致性约束】\n" + baseline +
-                "本轮对上述品种给出的操作建议：若数据与上一轮基本一致，应保持基线结论；若要推翻基线，必须先明确说明「较上一轮的变化原因」（如跌破/突破关键位、均线信号改变、涨跌幅显著变化），不得无依据推翻；同一轮回答内不得同时出现相互矛盾的操作建议。";
+        StringBuilder header = new StringBuilder();
+        header.append("【上一轮结论基线 · 最高优先级 · 必须遵守】\n").append(baseline);
+        header.append("本轮对上述品种的操作结论：数据未变 → 保持基线结论；推翻必须先明确说明数据/信号的具体变化（如跌破/突破关键位、均线信号改变、涨跌幅显著变化）。\n");
+        if (isUserChallenge(history)) {
+            header.append("注意：用户最新消息是对上一轮结论的质疑或提出了不同观点，这不是新数据。\n");
+            header.append("正确做法是——基于原数据捍卫或细化基线结论，");
+            header.append("区分不同投资期限下的结论差异（例如「短线可高抛、长线可持有」二者并不矛盾），");
+            header.append("不得因用户反对就全盘翻转结论；\n");
+            header.append("只有用户提供了新的行情事实（如最新价格、突发消息）才可作为推翻依据并引用说明。\n");
+        }
+        header.append("同一轮回答内不得出现相互矛盾的操作建议。\n\n");
+        return header + systemPrompt;
     }
 
-    /** 从对话历史中倒序查找最近一条含【品种】+操作结论的 assistant 消息，逐品种提取操作建议。
-     *  history 下标偶数为 user、奇数为 assistant（与 chatAsync 的角色分配一致）。 */
+    /** 启发式检测最新 user 消息是否为对上一轮结论的质疑/挑战（而非提供新数据） */
+    private static boolean isUserChallenge(List<String> history) {
+        if (history == null || history.isEmpty()) {
+            return false;
+        }
+        String lastMsg = history.get(history.size() - 1);
+        if (lastMsg == null) {
+            return false;
+        }
+        String[] challengeWords = {"不对", "错了", "怎么能", "怎么可以", "不该", "明明", "矛盾", "不一致", "你说过", "不是吧", "搞错"};
+        for (String w : challengeWords) {
+            if (lastMsg.contains(w)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 从对话历史中倒序查找最近一条含品种操作结论的 assistant 消息，逐品种提取操作建议。
+     *  history 下标偶数为 user、奇数为 assistant（与 chatAsync 的角色分配一致）。
+     *  注意：chatAsync 实际调用时 history 末尾是刚追加的 user 消息（奇数长度），
+     *  因此从最后一个 assistant 下标（奇数）开始倒序扫描。
+     *  优先匹配【品种(代码)】块格式；无【】块的纯文本回答（如"针对XX(代码)的…操作上建议…"）走回退提取。 */
     static String extractBaseline(List<String> history) {
         if (history == null || history.size() < 2) {
             return "";
         }
         Pattern block = Pattern.compile("(【[^】]+】)([\\s\\S]*?)(?=【[^】]+】|$)");
-        Pattern op = Pattern.compile("操作[】:：]?\\s*([^\\n。；;]{2,80})");
-        for (int i = history.size() - 1; i >= 1; i -= 2) {
+        Pattern op = Pattern.compile("操作[上]?\\s*[】:：]?\\s*([^\\n。；;]{2,80})");
+        Pattern codeName = Pattern.compile("([^\\s，。；;、]{1,20}\\([^)]{1,12}\\))");
+        // 末位是 user（奇数长度）→ 最后一个 assistant 在 size-2；末位是 assistant（偶数长度）→ 在 size-1
+        int start = history.size() % 2 == 1 ? history.size() - 2 : history.size() - 1;
+        for (int i = start; i >= 1; i -= 2) {
             String msg = history.get(i);
-            if (msg == null || !msg.contains("【")) {
+            if (msg == null || msg.isEmpty()) {
                 continue;
             }
-            StringBuilder sb = new StringBuilder();
-            Matcher blk = block.matcher(msg);
-            while (blk.find()) {
-                String name = blk.group(1).trim();
-                String body = blk.group(2);
-                if (name.isEmpty()) {
-                    continue;
-                }
-                Matcher om = op.matcher(body);
-                if (om.find()) {
-                    String advice = om.group(1).trim();
-                    if (!advice.isEmpty()) {
-                        sb.append("- ").append(name).append(" 操作：").append(advice).append("\n");
+            // ① 【品种(代码)】块格式（标准输出）
+            if (msg.contains("【")) {
+                StringBuilder sb = new StringBuilder();
+                Matcher blk = block.matcher(msg);
+                while (blk.find()) {
+                    String name = blk.group(1).trim();
+                    String body = blk.group(2);
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    Matcher om = op.matcher(body);
+                    if (om.find()) {
+                        String advice = om.group(1).trim();
+                        if (!advice.isEmpty()) {
+                            sb.append("- ").append(name).append(" 操作：").append(advice).append("\n");
+                        }
                     }
                 }
+                if (sb.length() > 0) {
+                    return sb.toString();
+                }
             }
-            if (sb.length() > 0) {
-                return sb.toString();
+            // ② 回退：纯文本格式（"针对XX(代码)…操作上建议…"），取第一个品种名 + 全文首个操作句
+            Matcher om = op.matcher(msg);
+            Matcher cn = codeName.matcher(msg);
+            if (om.find() && cn.find()) {
+                return "- " + cn.group(1) + " 操作：" + om.group(1).trim() + "\n";
             }
         }
         return "";
@@ -660,16 +791,18 @@ public class AIService {
                         return reasoning;
                     }
                 }
-                // 兜底：返回整个 message 内容便于调试
-                return "AI返回为空，message结构: " + message.toString();
+                // 兜底：原始结构只写日志，不回显给用户（可能含敏感信息）
+                PluginLog.info("[AIService] message 无可用文本字段: " + message);
+                return "AI 返回解析失败：响应中没有可用内容，请重试或更换模型（详情见日志）";
             }
             if (json.has("error")) {
                 return "API错误: " + json.getAsJsonObject("error").get("message").getAsString();
             }
         } catch (Exception e) {
-            // parse error
+            PluginLog.error("[AIService] extractResponseText 解析异常: " + e.getMessage(), e);
         }
-        return response;
+        PluginLog.info("[AIService] 无法识别的响应结构，len=" + (response != null ? response.length() : 0));
+        return "AI 返回解析失败：响应格式无法识别，请重试或更换模型（详情见日志）";
     }
 
     /** 去除 markdown 格式符号 */

@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.0.2</version>
+    <version>2.1.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
@@ -16,7 +16,11 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>新增：AI 分析跨轮一致性——追问时自动提取上一轮各品种操作结论作为基线注入对话，数据未变时保持结论一致，推翻须说明变化原因，同一轮内不得自相矛盾</li>
+            <li>安全：AI API Key 改用 IDE 凭据存储（macOS 钥匙串 / Windows 凭据管理器 / KeePass），不再明文保存到用户目录；旧版明文 Key 首次读取时自动迁移并从原文件中删除</li>
+            <li>安全：AI 设置中的 API Key 输入框改为密码框掩码显示</li>
+            <li>安全：快讯列表、更新检查与详情页链接全部改用 HTTPS</li>
+            <li>优化：API Key 读取改为后台异步加载并缓存，避免首次访问系统钥匙串时界面卡顿</li>
+            <li>修复：AI 追问失败后对话历史角色错位，导致下一轮把用户提问误当作「上一轮结论基线」的问题</li>
         </ul>
     ]]></change-notes>
 

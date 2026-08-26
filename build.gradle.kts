@@ -12,14 +12,13 @@ repositories {
 dependencies {
     intellijPlatform {
         intellijIdea("2024.1.7")
-        bundledPlugin("com.intellij.java")
     }
     implementation("com.google.code.gson:gson:2.11.0")
 }
 
 intellijPlatform {
     pluginConfiguration {
-        version = "2.0.2"
+        version = "2.1.0"
 
         ideaVersion {
             sinceBuild = "241"

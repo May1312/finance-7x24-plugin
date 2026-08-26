@@ -26,7 +26,7 @@ public class KuaixunItem {
     public String getContentText() { return digest.isEmpty() ? title : digest; }
     public String getDetailUrl() {
         if (newstype == 1 || newstype == 2) {
-            return "http://wap.eastmoney.com/3g/news/article,8,365,1," + newsid + ".shtml";
+            return "https://wap.eastmoney.com/3g/news/article,8,365,1," + newsid + ".shtml";
         }
         return "";
     }

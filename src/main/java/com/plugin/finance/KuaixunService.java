@@ -15,8 +15,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class KuaixunService {
-    private static final String API_URL = "http://newsapi.eastmoney.com/kuaixun/v2/api/list?column=102&p=%d&limit=50";
-    private static final String API_CHECK_URL = "http://newsapi.eastmoney.com/kuaixun/v2/api/list?column=102&id=%s&count=count";
+    private static final String API_URL = "https://newsapi.eastmoney.com/kuaixun/v2/api/list?column=102&p=%d&limit=50";
+    private static final String API_CHECK_URL =
+            "https://newsapi.eastmoney.com/kuaixun/v2/api/list?column=102&id=%s&count=count";
     private final Gson gson = new Gson();
 
     public List<KuaixunItem> fetchPage(int page) throws Exception {

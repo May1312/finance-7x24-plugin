@@ -50,6 +50,8 @@ public class WatchlistPanel extends JPanel {
     private static final List<String> INDEX_CODES_HK = List.of("hkHSI", "hkHSTECH");
     private static final List<String> INDEX_CODES_US = List.of("usDJI", "usIXIC", "usINX");
     private static final List<String> INDEX_CODES_GOLD = List.of("xau", "gc", "xag", "si");
+    /** 追问失败时写入 history 的 assistant 占位，保持 user/assistant 严格交替 */
+    private static final String AI_FAILED_PLACEHOLDER = "（本轮回答失败，无结论）";
 
     private enum MarketFilter {
         A("A股"), HK("港股"), US("美股"), GOLD("黄金");
@@ -625,11 +627,12 @@ public class WatchlistPanel extends JPanel {
         if (!autoRefreshTimer.isRunning()) autoRefreshTimer.start();
     }
 
-/** 重新加载 AI 配置（从文件读取） */
+/** 重新加载 AI 配置（异步从系统钥匙串读取，避免阻塞 EDT） */
     private void reloadAiConfig() {
         AIService.ModelInfo info = AIService.MODELS.get(currentModelId);
         if (info != null) {
-            currentApiKey = AIService.loadApiKey(info.provider);
+            AIService.loadApiKeyAsync(info.provider).thenAccept(key ->
+                    SwingUtilities.invokeLater(() -> currentApiKey = key));
         }
     }
 
@@ -823,6 +826,9 @@ public class WatchlistPanel extends JPanel {
                         SwingUtilities.invokeLater(() -> {
                             thinkingPanel.setVisible(false);
                             sendBtn.setEnabled(true);
+                            // 失败也要补一条 assistant 占位，否则 history 的「偶数 user / 奇数 assistant」
+                            // 交替被打破，后续轮次会把用户提问误当作上一轮结论基线
+                            history.add(AI_FAILED_PLACEHOLDER);
                             appendMessage.accept(false, "AI 分析失败: " + e.getMessage());
                         });
                         return null;
@@ -831,6 +837,7 @@ public class WatchlistPanel extends JPanel {
                     SwingUtilities.invokeLater(() -> {
                         thinkingPanel.setVisible(false);
                         sendBtn.setEnabled(true);
+                        history.add(AI_FAILED_PLACEHOLDER);
                         appendMessage.accept(false, "服务初始化失败: " + e.getMessage());
                     });
                 }
