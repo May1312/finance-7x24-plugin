@@ -16,7 +16,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 - 各市场自动刷新，均按各自开市时段运行，闭市时自动暂停并显示"闭市中"
 - 搜索框可搜索 A 股、港股、美股（带市场标签）
 - 底部展示大盘指数实时行情，按当前市场筛选标签自动切换（A股/港股/美股/黄金指数）
-- **AI 自选股分析**：基于实时行情一键分析自选组合，支持多轮追问对话
+- **AI 自选股分析**：基于实时行情一键分析自选组合，自动接入日K均线数据（MA5/10/20/60），支持多轮追问对话
 - AI 支持多厂商模型切换：商汤 SenseNova、智谱 GLM（均提供免费模型）
 - AI 对话气泡界面自适应 IDEA 深色 / 浅色主题
 
@@ -28,7 +28,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 
 | 厂商 | 模型 | 说明 |
 |------|------|------|
-| 商汤 SenseNova | `deepseek-v4-flash`、`6.8-flash-lite` | 免费模型，需注册获取 API Key |
+| 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2` | 免费模型，需注册获取 API Key |
 | 智谱 GLM | `glm-4-flash` | 免费模型，需注册获取 API Key |
 
 ### 首次使用
@@ -41,7 +41,8 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 
 ### 数据与隐私
 
-- API Key 仅保存在本地文件 `~/.finance7x24_ai_config.json`，不会上传
+- API Key 保存在 IDE 的凭据存储中（PasswordSafe，对应 macOS 钥匙串 / Windows 凭据管理器 / Linux KeePass），不明文落盘
+- 旧版本曾将 Key 明文保存在 `~/.finance7x24_ai_config.json`；升级后会自动将该文件中的 Key 迁移到凭据存储，并从原文件剔除，无残留 Key 时删除该文件
 - 发送给 AI 服务的内容仅包含自选代码与实时行情数据（不含 IDE 内其他信息）
 - AI 输出基于模型生成，仅供参考，不构成任何投资建议
 
@@ -63,8 +64,33 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 
 ## 兼容性
 
-- IntelliJ IDEA 2024.1 及以上版本（sinceBuild 241）
-- 基于 IntelliJ Platform SDK 2024.1.7 构建
+- IntelliJ IDEA 2024.1 及以上版本（sinceBuild 241，不设上限版本）
+- 基于 IntelliJ Platform 2024.1.7 构建，Gradle Wrapper 9.6.1
+
+## 开发
+
+环境要求：JDK 17 及以上（IntelliJ Platform 2024.1 的要求）。常用任务：
+
+```bash
+./gradlew buildPlugin   # 构建插件包，输出到 build/distributions/
+./gradlew runIde        # 启动沙箱 IDEA 实例进行本地调试
+```
+
+代码结构（`src/main/java/com/plugin/finance/`）：
+
+```
+├── KuaixunToolWindowFactory   # 工具窗口入口
+├── KuaixunPanel               # 快讯页：卡片列表 + 20秒自动刷新
+├── WatchlistPanel             # 自选页：行情表格 / 市场筛选 / 大盘指数 / AI 对话框
+├── QuoteService                # 行情多级兜底 + 日K均线计算
+├── KuaixunService              # 快讯接口
+├── StockSearchDialog/Service   # 股票搜索
+├── AIService                   # AI 厂商模型注册 / 提示词 / Key 凭据存储 / 接口调用
+├── AISettingsDialog            # AI 设置对话框
+└── 其余为模型类与工具类          # QuoteItem / KuaixunItem / MarketType / CodeUtils / GoldInstrument
+```
+
+架构设计、线程模型、持久化键与已知限制等实现细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 数据来源
 
@@ -84,7 +110,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 | 指数 | `sh` + 6 位代码 | `sh000001` |
 | 港股 | `hk` + 5 位代码 | `hk00700` |
 | 美股 | `us` + 字母代码 | `usAAPL` |
-| 黄金 | `xau` | `xau` |
+| 黄金/贵金属 | 内置品种库代码 | `xau`（伦敦金）、`gc`（纽约金）、`xag`（伦敦银）、`si`（纽约白银） |
 
 公开接口的数据内容、更新频率、实时性和可用性均取决于对应数据来源服务，插件不会保证行情数据实时、完整或持续可用。
 
@@ -96,4 +122,4 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 
 ## 隐私
 
-本插件不会收集、存储或上传用户个人信息。插件会请求公开财经快讯和行情接口以获取资讯内容。自选代码仅保存在当前 IDEA 项目的本地配置中。AI 服务的 API Key 仅保存在本地文件 `~/.finance7x24_ai_config.json`，不会上传；AI 分析仅向所选 AI 服务发送自选代码与行情数据。
+本插件不会收集、存储或上传用户个人信息。插件会请求公开财经快讯和行情接口以获取资讯内容。自选代码仅保存在当前 IDEA 项目的本地配置中。AI 服务的 API Key 保存在 IDE 凭据存储（PasswordSafe）中，不上传、不明文落盘；旧版明文保存的 Key 会自动迁移并从原文件清除。AI 分析仅向所选 AI 服务发送自选代码与行情数据。
