@@ -13,11 +13,13 @@ import javax.swing.border.Border;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.JTableHeader;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.text.Collator;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -29,6 +31,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -41,7 +44,7 @@ public class WatchlistPanel extends JPanel {
     private static final String SORT_STATE_KEY = "eastmoney.7x24.watchlist.sortState";
     private static final String INDEX_KEY = "eastmoney.7x24.watchlist.index";
     private static final String FILTER_KEY = "eastmoney.7x24.watchlist.marketFilter";
-    private static final String[] COLUMN_NAMES = {"代码", "名称", "最新价", "涨跌幅", "涨跌额"};
+    private static final String[] COLUMN_NAMES = {"名称", "最新价", "涨跌幅", "涨跌额"};
     private static final String[] INDEX_NAMES_A = {"上证指数", "深证成指", "创业板指"};
     private static final String[] INDEX_NAMES_HK = {"恒生指数", "恒生科技"};
     private static final String[] INDEX_NAMES_US = {"道琼斯", "纳斯达克", "标普500"};
@@ -95,7 +98,9 @@ public class WatchlistPanel extends JPanel {
 
     public WatchlistPanel(Project project) {
         this.project = project;
-        properties = PropertiesComponent.getInstance(project);
+        // 自选代码与界面状态存应用级配置，同一 IDE 的多个项目共用一份
+        properties = PropertiesComponent.getInstance();
+        migrateProjectScopedSettings();
         currentModelId = PropertiesComponent.getInstance().getValue("finance.ai.model", "");
         if (currentModelId.isEmpty() || !AIService.MODELS.containsKey(currentModelId)) {
             currentModelId = AIService.MODELS.keySet().iterator().next();
@@ -115,8 +120,38 @@ public class WatchlistPanel extends JPanel {
         refreshQuotes(false);
     }
 
+    /** 旧版本把自选代码、排序、筛选、大盘选择存在项目级配置，各项目互不相通；
+     *  改为全局共享后，首次运行把当前项目的旧值补种到应用级。
+     *  仅当应用级从未写入过该键时才补种，用户在应用级修改/清空过不会被旧项目数据覆盖。 */
+    private void migrateProjectScopedSettings() {
+        PropertiesComponent legacy = PropertiesComponent.getInstance(project);
+        seedIfAbsent(legacy, CODES_KEY);
+        seedIfAbsent(legacy, SORT_COL_KEY);
+        seedIfAbsent(legacy, SORT_STATE_KEY);
+        seedIfAbsent(legacy, FILTER_KEY);
+        for (MarketFilter f : MarketFilter.values()) {
+            seedIfAbsent(legacy, INDEX_KEY + "." + f.name());
+        }
+    }
+
+    private void seedIfAbsent(PropertiesComponent legacy, String key) {
+        if (properties.getValue(key) != null) {
+            return;
+        }
+        String value = legacy.getValue(key);
+        if (value != null) {
+            properties.setValue(key, value);
+        }
+    }
+
     private void tickAndAutoRefresh() {
-        if (!marketOpenFor(getFilteredCodes())) {
+        List<String> codes = getFilteredCodes();
+        if (codes.isEmpty()) {
+            // 无自选：保持「点击添加」提示，不覆盖为「闭市中」
+            autoRefreshTimer.stop();
+            return;
+        }
+        if (!marketOpenFor(codes)) {
             autoRefreshTimer.stop();
             statusLabel.setText("闭市中");
             return;
@@ -284,12 +319,13 @@ public class WatchlistPanel extends JPanel {
 
     private void initTable() {
         quoteTable.setFillsViewportHeight(true);
-        quoteTable.setRowHeight(JBUI.scale(30));
+        quoteTable.setRowHeight(JBUI.scale(44));
         quoteTable.setShowVerticalLines(false);
         quoteTable.setIntercellSpacing(JBUI.emptySize());
         quoteTable.setDefaultRenderer(Object.class, new WatchlistCellRenderer());
         quoteTable.setRowSorter(tableSorter);
         quoteTable.getSelectionModel().setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        quoteTable.getColumnModel().getColumn(0).setCellRenderer(new NameCodeCellRenderer());
         setupTableWidths();
         setupTableSorting();
         centerTableHeader();
@@ -355,22 +391,27 @@ public class WatchlistPanel extends JPanel {
         }
         StockSearchDialog dialog = new StockSearchDialog(window);
         dialog.setVisible(true);
-
         if (dialog.isConfirmed()) {
-            List<String> codes = dialog.getSelectedCodes();
-            if (codes != null && !codes.isEmpty()) {
-                Set<String> existing = new LinkedHashSet<>(parseCodes());
-                for (String code : codes) {
-                    String normalized = normalizeCode(code);
-                    if (normalized != null) {
-                        existing.add(normalized);
-                    }
-                }
-                saveCodes(new ArrayList<>(existing));
-                statusLabel.setText("已添加 " + codes.size() + " 只自选股，正在刷新...");
-                refreshQuotes(true);
+            addSelectedCodes(dialog.getSelectedCodes());
+        }
+    }
+
+    /** 把搜索对话框选中的代码并入自选（去重）并刷新 */
+    private void addSelectedCodes(List<String> codes) {
+        if (codes == null || codes.isEmpty()) {
+            return;
+        }
+        Set<String> existing = new LinkedHashSet<>(parseCodes());
+        for (String code : codes) {
+            String normalized = normalizeCode(code);
+            if (normalized != null) {
+                existing.add(normalized);
             }
         }
+        saveCodes(new ArrayList<>(existing));
+        statusLabel.setText("已添加 " + codes.size() + " 只自选股，正在刷新...");
+        resumeTimer();
+        refreshQuotes(true);
     }
 
     private void addCodesFromText(String input) {
@@ -385,6 +426,7 @@ public class WatchlistPanel extends JPanel {
         if (!parsed.isEmpty()) {
             saveCodes(new ArrayList<>(existing));
             statusLabel.setText("已添加 " + parsed.size() + " 只自选股，正在刷新...");
+            resumeTimer();
             refreshQuotes(true);
         }
     }
@@ -396,8 +438,10 @@ public class WatchlistPanel extends JPanel {
         List<String> codesToRemove = new ArrayList<>();
         for (int row : rows) {
             int modelRow = quoteTable.convertRowIndexToModel(row);
-            String code = String.valueOf(tableModel.getValueAt(modelRow, 0));
-            codesToRemove.add(code);
+            Object v = tableModel.getValueAt(modelRow, 0);
+            if (v instanceof QuoteItem) {
+                codesToRemove.add(((QuoteItem) v).getCode());
+            }
         }
 
         List<String> codes = parseCodes();
@@ -443,9 +487,13 @@ public class WatchlistPanel extends JPanel {
         Set<String> merged = new LinkedHashSet<>(codes);
         merged.addAll(indexCodes);
         List<String> fetchCodes = new ArrayList<>(merged);
-        if (fetchCodes.isEmpty()) {
+        if (codes.isEmpty()) {
+            // 无自选时只拉底部大盘指数，状态栏保留添加提示（此前会误显示「闭市中」）
             tableModel.setRowCount(0);
-            setStatus(parseCodes().isEmpty() ? "点击「添加」搜索股票" : "当前市场无自选股");
+            statusLabel.setText(parseCodes().isEmpty() ? "点击「添加」搜索股票" : "当前市场无自选股");
+            if (!indexCodes.isEmpty()) {
+                refreshIndexData(true);
+            }
             return;
         }
 
@@ -611,8 +659,7 @@ public class WatchlistPanel extends JPanel {
         tableModel.setRowCount(0);
         for (QuoteItem item : items) {
             tableModel.addRow(new Object[]{
-                    item.getCode(),
-                    item.getName(),
+                    item,
                     formatPrice(item.getPrice()),
                     formatPercent(item.getChangePercent()),
                     formatPrice(item.getChangeAmount())
@@ -961,7 +1008,7 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void setupTableWidths() {
-        int[] prefWidths = {JBUI.scale(85), JBUI.scale(220), JBUI.scale(90), JBUI.scale(90), JBUI.scale(90)};
+        int[] prefWidths = {JBUI.scale(130), JBUI.scale(95), JBUI.scale(95), JBUI.scale(95)};
         var columnModel = quoteTable.getColumnModel();
         for (int i = 0; i < columnModel.getColumnCount() && i < prefWidths.length; i++) {
             columnModel.getColumn(i).setMinWidth(JBUI.scale(50));
@@ -970,6 +1017,7 @@ public class WatchlistPanel extends JPanel {
         quoteTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
     }
 
+    /** 表头统一居中 */
     private void centerTableHeader() {
         JTableHeader header = quoteTable.getTableHeader();
         DefaultTableCellRenderer renderer = (DefaultTableCellRenderer) header.getDefaultRenderer();
@@ -977,8 +1025,12 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void setupTableSorting() {
+        Comparator<Object> nameComparator = Comparator.comparing(
+                o -> o instanceof QuoteItem ? ((QuoteItem) o).getName() : String.valueOf(o),
+                Collator.getInstance(Locale.CHINA));
+        tableSorter.setComparator(0, nameComparator);
         Comparator<String> numericComparator = Comparator.comparingDouble(this::parseDisplayNumber);
-        for (int i = 2; i < tableModel.getColumnCount(); i++) {
+        for (int i = 1; i < tableModel.getColumnCount(); i++) {
             tableSorter.setComparator(i, numericComparator);
         }
         JTableHeader header = quoteTable.getTableHeader();
@@ -1014,6 +1066,11 @@ public class WatchlistPanel extends JPanel {
             sortedColumn = Integer.parseInt(properties.getValue(SORT_COL_KEY, "-1"));
             sortState = Integer.parseInt(properties.getValue(SORT_STATE_KEY, "0"));
         } catch (NumberFormatException ignored) {
+            sortedColumn = -1;
+            sortState = 0;
+        }
+        if (sortedColumn >= tableModel.getColumnCount()) {
+            // 旧版表格是 5 列（代码/名称分列），恢复时序号可能越界
             sortedColumn = -1;
             sortState = 0;
         }
@@ -1083,6 +1140,54 @@ public class WatchlistPanel extends JPanel {
         }
     }
 
+    /** 名称 + 代码两行式单元格：名称一行、代码小字灰色一行。
+     *  面板保持透明，否则会盖住表格自绘的行分隔线（数值列渲染器透明、行线可见，需保持一致）；选中时才自行填充高亮背景。 */
+    private static class NameCodeCellRenderer extends JPanel implements TableCellRenderer {
+        private final JLabel nameLabel = new JLabel();
+        private final JLabel codeLabel = new JLabel();
+        private boolean selected = false;
+
+        private NameCodeCellRenderer() {
+            super(new BorderLayout(0, 0));
+            setOpaque(false);
+            setBorder(JBUI.Borders.empty(3, 6));
+            nameLabel.setFont(JBFont.label());
+            nameLabel.setHorizontalAlignment(SwingConstants.CENTER);
+            codeLabel.setFont(JBFont.label().deriveFont(Font.PLAIN, JBUI.scaleFontSize(11f)));
+            codeLabel.setHorizontalAlignment(SwingConstants.CENTER);
+            add(nameLabel, BorderLayout.CENTER);
+            add(codeLabel, BorderLayout.SOUTH);
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                       boolean hasFocus, int row, int column) {
+            selected = isSelected;
+            setBackground(isSelected ? table.getSelectionBackground() : table.getBackground());
+            if (value instanceof QuoteItem) {
+                QuoteItem item = (QuoteItem) value;
+                nameLabel.setText(item.getName());
+                codeLabel.setText(item.getCode());
+            } else {
+                nameLabel.setText(value == null ? "" : String.valueOf(value));
+                codeLabel.setText("");
+            }
+            Color mainFg = isSelected ? table.getSelectionForeground() : table.getForeground();
+            nameLabel.setForeground(mainFg);
+            codeLabel.setForeground(isSelected ? mainFg : UIManager.getColor("Label.infoForeground"));
+            return this;
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            if (selected) {
+                g.setColor(getBackground());
+                g.fillRect(0, 0, getWidth(), getHeight());
+            }
+            super.paintComponent(g);
+        }
+    }
+
     private static class WatchlistCellRenderer extends DefaultTableCellRenderer {
         private static final Color RISE_COLOR = new JBColor(new Color(0xC62828), new Color(0xFF6B6B));
         private static final Color FALL_COLOR = new JBColor(new Color(0x2E7D32), new Color(0x69D98A));
@@ -1097,13 +1202,13 @@ public class WatchlistPanel extends JPanel {
             if (isSelected) return this;
 
             int modelColumn = table.convertColumnIndexToModel(column);
-            if (modelColumn < 2) {
+            if (modelColumn < 1) {
                 setForeground(table.getForeground());
                 return this;
             }
 
             int modelRow = table.convertRowIndexToModel(row);
-            double percent = parsePercent(table.getModel().getValueAt(modelRow, 3));
+            double percent = parsePercent(table.getModel().getValueAt(modelRow, 2));
             Color color;
             if (percent > EPS) {
                 color = RISE_COLOR;

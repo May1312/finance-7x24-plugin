@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.1.0</version>
+    <version>2.2.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
@@ -16,11 +16,10 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>安全：AI API Key 改用 IDE 凭据存储（macOS 钥匙串 / Windows 凭据管理器 / KeePass），不再明文保存到用户目录；旧版明文 Key 首次读取时自动迁移并从原文件中删除</li>
-            <li>安全：AI 设置中的 API Key 输入框改为密码框掩码显示</li>
-            <li>安全：快讯列表、更新检查与详情页链接全部改用 HTTPS</li>
-            <li>优化：API Key 读取改为后台异步加载并缓存，避免首次访问系统钥匙串时界面卡顿</li>
-            <li>修复：AI 追问失败后对话历史角色错位，导致下一轮把用户提问误当作「上一轮结论基线」的问题</li>
+            <li>新增：自选行情全局共享——自选代码、排序、市场筛选与大盘选择存入应用级配置，同一 IDE 的多个项目共用一份，旧版项目级数据首次运行自动迁移</li>
+            <li>新增：自选列表名称与代码两行式展示，代码以小号灰字显示在名称下方</li>
+            <li>修复：自选为空时状态栏误显示「闭市中」，现提示通过「添加」按钮添加自选，底部大盘指数照常刷新</li>
+            <li>修复：名称列渲染器遮挡表格行分隔线的问题，行线恢复贯通整行</li>
         </ul>
     ]]></change-notes>
 

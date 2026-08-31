@@ -62,7 +62,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ### WatchlistPanel
 
-- 表格 5 列（代码/名称/最新价/涨跌幅/涨跌额），数值列比较器先解析字符串再比大小；表头点击三态排序（倒序 → 正序 → 默认），排序列与状态持久化。
+- 表格 4 列：名称（两行式单元格——名称一行、代码小字灰色一行，单元格直接携带 QuoteItem）+ 最新价/涨跌幅/涨跌额；名称列按中文 Collator 排序，数值列比较器先解析字符串再比大小；表头点击三态排序（倒序 → 正序 → 默认），排序列与状态持久化（恢复时校验列号越界，兼容旧版 5 列布局存下的状态）。
 - 顶部市场筛选标签（A股/港股/美股/黄金）：切换时过滤自选 codes、替换底部大盘指数组并恢复该市场的选中项、重置倒计时刷新。
 - 底部大盘指数：每组固定代码清单（上证指数等/恒指恒科/道纳标普/四只贵金属），与自选合并成一次行情请求拉回后拆分显示，涨跌沿用 A 股配色（涨红跌绿，深浅主题双色适配）。
 - 刷新流程 `refreshQuotes(force)`：闭市时只置“闭市中”；开市则起后台线程请求，失败重试最多 3 次（间隔 1.5s），成功后 invokeLater 更新表格/指数/状态栏；`isRefreshing` 防重入，10 秒轮询间隔由倒计时控制。
@@ -118,7 +118,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ## 持久化键清单
 
-项目级 PropertiesComponent（`WatchlistPanel` 内常量）：
+应用级 PropertiesComponent（全局共享，同一 IDE 的所有项目共用一份；键名常量在 `WatchlistPanel`）：
 
 | 键 | 内容 |
 |----|------|
@@ -126,6 +126,8 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 | `eastmoney.7x24.watchlist.sortColumn` / `.sortState` | 三态排序状态 |
 | `eastmoney.7x24.watchlist.marketFilter` | 当前市场筛选标签 |
 | `eastmoney.7x24.watchlist.index.<MARKET>` | 各市场的大盘指数选中序号 |
+
+迁移：2.1.0 及之前这些键存在项目级配置（各项目一份，互不相通）。升级后 `WatchlistPanel` 构造时执行 `migrateProjectScopedSettings`，把当前项目的旧值补种到应用级——仅当应用级从未写入过该键时才补种，因此用户在应用级已做的修改或清空不会被其他项目的旧数据覆盖。
 
 应用级 PropertiesComponent：`finance.ai.model`（选中的模型 id）。
 
