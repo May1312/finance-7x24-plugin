@@ -48,19 +48,29 @@ public class AIService {
         }
     }
 
+    /** 采样温度默认值；个别模型只接受特定值（如 kimi-k3 仅允许 1），注册时单独指定 */
+    private static final double DEFAULT_TEMPERATURE = 0.3;
+
     public static class ModelInfo {
         public final String id;
         public final String displayName;
         public final String provider;
         public final String apiUrl;
         public final boolean free;
+        /** 该模型允许的采样温度 */
+        public final double temperature;
 
         public ModelInfo(String id, String displayName, String provider, String apiUrl, boolean free) {
+            this(id, displayName, provider, apiUrl, free, DEFAULT_TEMPERATURE);
+        }
+
+        public ModelInfo(String id, String displayName, String provider, String apiUrl, boolean free, double temperature) {
             this.id = id;
             this.displayName = displayName;
             this.provider = provider;
             this.apiUrl = apiUrl;
             this.free = free;
+            this.temperature = temperature;
         }
 
         public String fullDisplayName() {
@@ -86,6 +96,8 @@ public class AIService {
                 "https://token.sensenova.cn/v1/chat/completions", true);
         registerModel("glm-5.2", "GLM-5.2", "商汤 SenseNova",
                 "https://token.sensenova.cn/v1/chat/completions", true);
+        registerModel("kimi-k3", "Kimi K3", "商汤 SenseNova",
+                "https://token.sensenova.cn/v1/chat/completions", true, 1.0);
 
         // 智谱 GLM
         registerProvider("智谱 GLM", "https://open.bigmodel.cn  →  API Keys → 新建 API Key");
@@ -99,7 +111,12 @@ public class AIService {
     }
 
     private static void registerModel(String id, String displayName, String provider, String apiUrl, boolean free) {
-        ModelInfo info = new ModelInfo(id, displayName, provider, apiUrl, free);
+        registerModel(id, displayName, provider, apiUrl, free, DEFAULT_TEMPERATURE);
+    }
+
+    private static void registerModel(String id, String displayName, String provider, String apiUrl,
+                                      boolean free, double temperature) {
+        ModelInfo info = new ModelInfo(id, displayName, provider, apiUrl, free, temperature);
         MODELS.put(id, info);
         PROVIDER_MODELS.computeIfAbsent(provider, k -> new ArrayList<>()).add(info);
     }
@@ -681,11 +698,14 @@ public class AIService {
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("model", modelId);
             requestBody.add("messages", messages);
-            requestBody.addProperty("temperature", 0.3);
             requestBody.addProperty("max_tokens", 4000);
 
-            // reasoning_effort 仅商汤 SenseNova 支持，其他厂商不传避免报错
             ModelInfo info = MODELS.get(modelId);
+            // 采样温度按模型注册值下发（kimi-k3 仅接受 1），未注册模型走默认值
+            requestBody.addProperty("temperature",
+                    info != null ? info.temperature : DEFAULT_TEMPERATURE);
+
+            // reasoning_effort 仅商汤 SenseNova 支持，其他厂商不传避免报错
             if (info != null && "商汤 SenseNova".equals(info.provider)) {
                 requestBody.addProperty("reasoning_effort", "none");
             }

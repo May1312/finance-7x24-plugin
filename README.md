@@ -29,7 +29,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 
 | 厂商 | 模型 | 说明 |
 |------|------|------|
-| 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2` | 免费模型，需注册获取 API Key |
+| 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2`、`kimi-k3` | 免费模型，需注册获取 API Key |
 | 智谱 GLM | `glm-4-flash` | 免费模型，需注册获取 API Key |
 
 ### 首次使用
