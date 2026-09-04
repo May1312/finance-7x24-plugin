@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class KuaixunPanel extends JPanel {
     private final Project project;
+    private final WatchlistPanel watchlistPanel;
     private final JPanel cardsPanel = new JPanel();
     private final KuaixunService service = new KuaixunService();
     private final JBScrollPane newsScrollPane = new JBScrollPane();
@@ -74,7 +75,7 @@ public class KuaixunPanel extends JPanel {
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("快讯", newsPanel);
-        WatchlistPanel watchlistPanel = new WatchlistPanel(project);
+        watchlistPanel = new WatchlistPanel(project);
         tabs.addTab("自选", watchlistPanel);
         add(tabs, BorderLayout.CENTER);
 
@@ -335,8 +336,13 @@ public class KuaixunPanel extends JPanel {
         return false;
     }
 
+    /** 打开 AI 模型设置（供工具窗口标题栏快捷入口调用） */
+    public void openAiSettings() {
+        watchlistPanel.showAiSettings();
+    }
+
     private JPanel createCard(KuaixunItem item) {
-        return new NewsCard(item);
+        return new NewsCard(item, () -> watchlistPanel.openNewsInterpretation(item.getTitle(), item.getDigest()));
     }
 
     /**
@@ -362,7 +368,7 @@ public class KuaixunPanel extends JPanel {
 
         private final String timeText;
 
-        private NewsCard(KuaixunItem item) {
+        private NewsCard(KuaixunItem item, Runnable aiInterpretAction) {
             this.itemId = item.getId();
             this.timeText = item.getDisplayTimeText();
             setOpaque(false);
@@ -370,18 +376,36 @@ public class KuaixunPanel extends JPanel {
             setAlignmentX(Component.LEFT_ALIGNMENT);
             setMaximumSize(new Dimension(Short.MAX_VALUE, Short.MAX_VALUE));
 
+            // 顶行：时间胶囊由 paintComponent 绘制在左侧，右上放「AI 解读」入口
+            JPanel topRow = new JPanel(new BorderLayout());
+            topRow.setOpaque(false);
+            topRow.setBorder(BorderFactory.createEmptyBorder(
+                    JBUI.scale(8), JBUI.scale(12), 0, JBUI.scale(12)));
+            JButton aiBtn = new JButton("AI 解读");
+            aiBtn.setFont(JBFont.small());
+            aiBtn.setForeground(UIManager.getColor("Label.infoForeground"));
+            aiBtn.setContentAreaFilled(false);
+            aiBtn.setBorderPainted(false);
+            aiBtn.setFocusPainted(false);
+            aiBtn.setMargin(new Insets(0, 0, 0, 0));
+            aiBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            aiBtn.setToolTipText("AI 解读这条快讯，并关联自选股分析影响");
+            aiBtn.addActionListener(e -> aiInterpretAction.run());
+            topRow.add(aiBtn, BorderLayout.EAST);
+            add(topRow, BorderLayout.NORTH);
+
             String title = item.getTitle() != null ? item.getTitle() : "";
             String digest = item.getDigest();
             boolean hasDigest = digest != null && !digest.isEmpty() && !digest.equals(title);
 
             int cardPad = JBUI.scale(14);
-            int topPad = JBUI.scale(30); // space for time pill
             int bottomPad = JBUI.scale(8);
 
             JPanel content = new JPanel();
             content.setOpaque(false);
             content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-            content.setBorder(BorderFactory.createEmptyBorder(topPad, cardPad, bottomPad, cardPad));
+            content.setBorder(BorderFactory.createEmptyBorder(
+                    JBUI.scale(2), cardPad, bottomPad, cardPad));
 
             JTextArea titleArea = new JTextArea(title);
             titleArea.setFont(JBFont.label().asBold().deriveFont(JBFont.label().getSize() + 1.0f));

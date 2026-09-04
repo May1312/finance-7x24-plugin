@@ -31,7 +31,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 - **KuaixunPanel**：
   - 单一 1 秒 tick 的 Swing Timer 驱动倒计时和触发刷新（20 秒间隔），避免两个 timer 不同步；状态栏文案由 `setStatus`/`updateCountdownDisplay` 维护。
   - 手动刷新 `refreshData()` 清空重建；自动刷新 `doCheckNewData()` 用 SwingWorker 增量插入：按 `knownIds` 去重、逆序插到顶部，并做滚动位置补偿（保存视口 y → 插入卡片 → 布局完成后累加插入高度回写视口位置），刷新期间所有卡片 alpha 半透明闪烁。
-  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。
+  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。卡片顶行右侧有「AI 解读」按钮，点击调 `WatchlistPanel.openNewsInterpretation`：后台批量拉一次自选行情拼出"名称(代码)"清单，连同快讯标题/摘要以 `NEWS_INTERPRET_PROMPT` 在 AI 对话框首发提问，解读结果可继续追问（复用自选分析的聊天框，发送逻辑经 rootPane clientProperty 的 `sendMessage` 暴露）。
 
 ## 行情模块
 
@@ -72,7 +72,9 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ### 厂商与模型注册
 
-`AIService` 的 static 块通过 `registerProvider` / `registerModel` 注册厂商与模型信息（id、展示名、apiUrl、是否免费），维护 `MODELS`（id → ModelInfo）与 `PROVIDER_MODELS`（厂商 → 模型列表）两张表供设置对话框联动。新增厂商/模型只需在此追加一行。
+`AIService` 的 static 块通过 `registerProvider` / `registerModel` 注册厂商与模型信息（id、展示名、apiUrl、是否免费、允许的采样温度），维护 `MODELS`（id → ModelInfo）与 `PROVIDER_MODELS`（厂商 → 模型列表）两张表供设置对话框联动。新增厂商/模型只需在此追加一行。
+
+自定义渠道：厂商表里有固定的「自定义 (OpenAI 兼容)」（`CUSTOM_PROVIDER`），无预置模型；设置对话框选中后隐藏模型下拉，切换为 BaseURL + 模型 ID 输入行。保存时 BaseURL/模型名写应用级 `finance.ai.custom.baseurl` / `finance.ai.custom.model`，`finance.ai.model` 记为哨兵值 `custom`（`CUSTOM_MODEL_ID`），Key 存 PasswordSafe 的自定义厂商名下。`AIService(apiKey, modelId, customBaseUrl)` 三参构造走自定义端点——BaseURL 经 `normalizeBaseUrl` 规范化并自动补全 `/chat/completions`；自定义模式不发 `reasoning_effort`、采样温度走默认值。
 
 ### API Key 安全存储（v2.1.0 起）
 
@@ -96,10 +98,12 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 - `enforceConsistency` 后处理两条确定性规则：① 按三阶段纠正“今日/目前/昨日”措辞（盘前→昨日、盘中→目前、盘后→今日）；② K 线阴阳/十字星与涨跌幅符号矛盾时纠正。提示词层面的强约束（颜色唯一依据涨跌幅字段、阶段措辞、禁止编造数据等）是对抗模型跑偏的第一层，后处理是第二层兜底。
 - `extractBaseline` 从最近一条含结论的 assistant 回答中逐品种提取操作建议；`appendBaseline` 将其作为最高优先级 header 注入 system prompt，要求数据未变不得推翻、推翻必须说明变化原因；`isUserChallenge` 用关键词启发式识别“质疑≠新数据”，此时追加辩护指引防止因用户反驳就翻转结论。
 
-## 设置对话框与聊天气泡
+## 设置入口与对话框
 
-- **AISettingsDialog**：厂商 ↔ 模型下拉联动（切厂商刷新模型列表并异步回填该厂商已存 Key，回填时校验厂商未被再次切换）；Key 输入框为 JPasswordField（掩码显示，`getPassword` 读取后清零字符数组）；恢复上次选择时注意顺序——先选中厂商触发联动、再在模型列表中定位已存模型。“测试连接”临时构造 AIService 发一条测试消息判定成败。
-- **AI 对话框**（内嵌于 WatchlistPanel）：聊天区是单个 JTextPane 拼 HTML；由于 Swing 只支持 HTML 3.2 且不支持 rgba，气泡颜色按面板背景亮度预计算并预融合；跨组件引用（loadingPanel/loadingLabel/appendMessage 回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 关闭，重复点 AI 分析按钮只会 toFront 已有对话框。
+- **AISettingsPanel**：AI 设置表单（厂商/模型、自定义 BaseURL+模型 ID、Key、测试连接），由 `AISettingsDialog`（工具窗口「设置」按钮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。
+- **AISettingsDialog**：薄壳对话框，只负责窗口尺寸/居中与取消/保存按钮；自定义渠道校验必填后保存。
+- **AISettingsConfigurable**：标准 Configurable 生命周期（isModified/apply/reset）；`isModified` 中 Key 与内存缓存（`getCachedApiKey`）比较，避免首次访问系统钥匙串阻塞设置页。设置页保存后，工具窗口在下次进入 AI 分析/解读入口时经 `refreshAiConfigFromStorage` 拾取新配置。
+- **AI 对话框**（内嵌于 WatchlistPanel）：聊天区是单个 JTextPane 拼 HTML；由于 Swing 只支持 HTML 3.2 且不支持 rgba，气泡颜色按面板背景亮度预计算并预融合；跨组件引用（loadingPanel/loadingLabel/appendMessage/sendMessage 回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 关闭，重复点 AI 分析按钮只会 toFront 已有对话框。
 
 ## 线程模型
 

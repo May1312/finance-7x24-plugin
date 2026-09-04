@@ -7,6 +7,7 @@ import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.CredentialAttributesKt;
 import com.intellij.credentialStore.Credentials;
 import com.intellij.ide.passwordSafe.PasswordSafe;
+import com.intellij.ide.util.PropertiesComponent;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -87,6 +88,12 @@ public class AIService {
     // 厂商 → 模型列表
     public static final Map<String, List<ModelInfo>> PROVIDER_MODELS = new LinkedHashMap<>();
 
+    /** 自定义 OpenAI 兼容渠道：厂商名、固定模型 ID 哨兵与持久化键 */
+    public static final String CUSTOM_PROVIDER = "自定义 (OpenAI 兼容)";
+    public static final String CUSTOM_MODEL_ID = "custom";
+    private static final String CUSTOM_BASEURL_KEY = "finance.ai.custom.baseurl";
+    private static final String CUSTOM_MODEL_NAME_KEY = "finance.ai.custom.model";
+
     static {
         // 商汤 SenseNova
         registerProvider("商汤 SenseNova", "https://platform.sensenova.cn  →  API Keys → 新建 API Key");
@@ -103,6 +110,9 @@ public class AIService {
         registerProvider("智谱 GLM", "https://open.bigmodel.cn  →  API Keys → 新建 API Key");
         registerModel("glm-4-flash", "GLM-4-Flash", "智谱 GLM",
                 "https://open.bigmodel.cn/api/paas/v4/chat/completions", true);
+
+        // 自定义 OpenAI 兼容渠道：无预置模型，接口地址与模型 ID 由用户填写
+        registerProvider(CUSTOM_PROVIDER, "");
     }
 
     private static void registerProvider(String provider, String registerUrl) {
@@ -189,6 +199,47 @@ public class AIService {
         return CompletableFuture.supplyAsync(() -> loadApiKey(provider), SHARED_EXECUTOR);
     }
 
+    /** 仅读内存缓存（不触发钥匙串访问），供设置页 isModified 做轻量比较 */
+    public static String getCachedApiKey(String provider) {
+        String cached = KEY_CACHE.get(provider);
+        return cached == null ? "" : cached;
+    }
+
+    public static boolean isCustomModel(String modelId) {
+        return CUSTOM_MODEL_ID.equals(modelId);
+    }
+
+    public static boolean isCustomProvider(String provider) {
+        return CUSTOM_PROVIDER.equals(provider);
+    }
+
+    /** 自定义渠道持久化的接口地址 / 模型 ID（应用级配置，多项目共享） */
+    public static String getCustomBaseUrl() {
+        return PropertiesComponent.getInstance().getValue(CUSTOM_BASEURL_KEY, "");
+    }
+
+    public static String getCustomModelName() {
+        return PropertiesComponent.getInstance().getValue(CUSTOM_MODEL_NAME_KEY, "");
+    }
+
+    public static void saveCustomConfig(String baseUrl, String modelName) {
+        PropertiesComponent pc = PropertiesComponent.getInstance();
+        pc.setValue(CUSTOM_BASEURL_KEY, baseUrl == null ? "" : baseUrl.trim());
+        pc.setValue(CUSTOM_MODEL_NAME_KEY, modelName == null ? "" : modelName.trim());
+    }
+
+    /** 规范化用户输入的 BaseURL：去尾斜杠；未带 /chat/completions 时自动补全 */
+    public static String normalizeBaseUrl(String input) {
+        String url = input == null ? "" : input.trim();
+        while (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        if (!url.isEmpty() && !url.endsWith("/chat/completions")) {
+            url = url + "/chat/completions";
+        }
+        return url;
+    }
+
     /** 从旧版明文文件取出该厂商的 Key，迁移进 PasswordSafe 并从文件中删除；无旧数据时返回空串 */
     private static String migrateLegacyKey(String provider) {
         JsonObject config = loadLegacyConfig();
@@ -268,10 +319,21 @@ public class AIService {
     });
 
     public AIService(String apiKey, String modelId) {
+        this(apiKey, modelId, null);
+    }
+
+    /** customBaseUrl 非空时走自定义 OpenAI 兼容端点（此时 modelId 应为 CUSTOM_MODEL_ID） */
+    public AIService(String apiKey, String modelId, String customBaseUrl) {
         this.apiKey = apiKey;
-        this.modelId = modelId;
-        ModelInfo info = MODELS.get(modelId);
-        this.apiUrl = info != null ? info.apiUrl : MODELS.values().iterator().next().apiUrl;
+        if (customBaseUrl != null && !customBaseUrl.trim().isEmpty()) {
+            // 请求体里的 model 必须用用户填写的真实模型 ID，"custom" 只是本地选中状态的哨兵值
+            this.modelId = CUSTOM_MODEL_ID.equals(modelId) ? getCustomModelName() : modelId;
+            this.apiUrl = normalizeBaseUrl(customBaseUrl);
+        } else {
+            this.modelId = modelId;
+            ModelInfo info = MODELS.get(modelId);
+            this.apiUrl = info != null ? info.apiUrl : MODELS.values().iterator().next().apiUrl;
+        }
     }
 
     /** 分析自选股的系统提示词 */
@@ -299,6 +361,16 @@ public class AIService {
                     "【风险】仅在该股有特殊风险点时输出一行，无则省略\n" +
                     "最后给出组合整体评估，不超过5行：仓位建议、市场情绪、当前是否适合左侧布局。\n" +
                     "语言专业、数据驱动、直接给结论。注意：以下为分析参考，不构成投资建议。";
+
+    /** 快讯解读系统提示词：定性结论 + 关联自选 + 后续跟踪点（自选清单运行时追加在本提示末尾，不进入用户气泡） */
+    public static final String NEWS_INTERPRET_PROMPT =
+            "你是一个专业证券分析师，擅长快速解读财经快讯。\n" +
+            "用户消息包含一条7x24财经快讯（标题+摘要）；用户当前的自选股清单（名称+代码）附在本提示末尾，可能为空。\n" +
+            "请按以下结构输出（纯文本，不用markdown符号，结论先行）：\n" +
+            "1. 【定性】一句话结论：利多/利空/中性，指向哪个行业或板块，为什么。\n" +
+            "2. 【关联自选】对照自选股清单，按行业、产业链或主题判断哪些品种与该消息相关，逐只说明关联逻辑与潜在影响方向，引用品种时写名称即可；确无关联则写「与当前自选无直接关联」。清单为空则省略此节。\n" +
+            "3. 【跟踪点】1-2 条后续需要盯住的信号（数据落地时间、政策细则、业绩窗口等）。\n" +
+            "要求：只基于快讯内容与给定清单作答，不得编造未提供的数字或背景；语气克制，避免夸大单一事件的影响；解读仅为资讯参考，不构成投资建议。";
 
     /** 构建自选股行情上下文（供 UI 展示与调用分析共用） */
     public static String buildMarketContext(List<QuoteItem> items, String marketName) {

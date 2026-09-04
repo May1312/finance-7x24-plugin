@@ -30,5 +30,10 @@
                 anchor="right"
                 icon="/icons/kuaixunToolWindow.svg"
                 factoryClass="com.plugin.finance.KuaixunToolWindowFactory"/>
+        <applicationConfigurable
+                parentId="tools"
+                id="com.plugin.finance.AISettingsConfigurable"
+                displayName="Finance 7x24 News AI"
+                instance="com.plugin.finance.AISettingsConfigurable"/>
     </extensions>
 </idea-plugin>

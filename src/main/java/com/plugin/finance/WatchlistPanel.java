@@ -70,6 +70,7 @@ public class WatchlistPanel extends JPanel {
     private String currentApiKey = "";
     private String currentModelId = "";
     private JDialog aiDialog;
+    private AISettingsDialog settingsDialog;
 
     private final DefaultTableModel tableModel = new DefaultTableModel(COLUMN_NAMES, 0) {
         @Override public boolean isCellEditable(int row, int column) { return false; }
@@ -102,7 +103,8 @@ public class WatchlistPanel extends JPanel {
         properties = PropertiesComponent.getInstance();
         migrateProjectScopedSettings();
         currentModelId = PropertiesComponent.getInstance().getValue("finance.ai.model", "");
-        if (currentModelId.isEmpty() || !AIService.MODELS.containsKey(currentModelId)) {
+        if (currentModelId.isEmpty()
+                || (!AIService.isCustomModel(currentModelId) && !AIService.MODELS.containsKey(currentModelId))) {
             currentModelId = AIService.MODELS.keySet().iterator().next();
         }
         reloadAiConfig();
@@ -198,12 +200,6 @@ public class WatchlistPanel extends JPanel {
         aiBtn.setPreferredSize(JBUI.size(65, 28));
         aiBtn.addActionListener(e -> showAiAnalysis());
 
-        JButton settingsBtn = new JButton("设置");
-        settingsBtn.setToolTipText("AI 设置（API Key）");
-        settingsBtn.setFont(JBFont.label().deriveFont(12f));
-        settingsBtn.setPreferredSize(JBUI.size(50, 28));
-        settingsBtn.addActionListener(e -> showAiSettings());
-
         JLabel titleLabel = new JLabel("自选行情");
         titleLabel.setFont(JBFont.label().asBold());
 
@@ -211,7 +207,6 @@ public class WatchlistPanel extends JPanel {
         rightPanel.add(addButton);
         rightPanel.add(refreshButton);
         rightPanel.add(aiBtn);
-        rightPanel.add(settingsBtn);
 
         JPanel actionRow = new JPanel(new BorderLayout(8, 0));
         actionRow.add(titleLabel, BorderLayout.WEST);
@@ -674,38 +669,69 @@ public class WatchlistPanel extends JPanel {
         if (!autoRefreshTimer.isRunning()) autoRefreshTimer.start();
     }
 
-/** 重新加载 AI 配置（异步从系统钥匙串读取，避免阻塞 EDT） */
-    private void reloadAiConfig() {
-        AIService.ModelInfo info = AIService.MODELS.get(currentModelId);
-        if (info != null) {
-            AIService.loadApiKeyAsync(info.provider).thenAccept(key ->
-                    SwingUtilities.invokeLater(() -> currentApiKey = key));
+/** 当前选中模型所属厂商（自定义渠道返回自定义厂商名） */
+    private String currentAiProvider() {
+        if (AIService.isCustomModel(currentModelId)) {
+            return AIService.CUSTOM_PROVIDER;
         }
+        AIService.ModelInfo info = AIService.MODELS.get(currentModelId);
+        return info != null ? info.provider : AIService.PROVIDERS.get(0);
+    }
+
+    /** 按当前模型构造 AIService（自定义渠道需带上保存的 BaseURL） */
+    private AIService createAiService(String key) {
+        if (AIService.isCustomModel(currentModelId)) {
+            return new AIService(key, currentModelId, AIService.getCustomBaseUrl());
+        }
+        return new AIService(key, currentModelId);
+    }
+
+    /** 重新加载 AI 配置（异步从系统钥匙串读取，避免阻塞 EDT） */
+    private void reloadAiConfig() {
+        AIService.loadApiKeyAsync(currentAiProvider()).thenAccept(key ->
+                SwingUtilities.invokeLater(() -> currentApiKey = key));
     }
 
     /** 保存 AI 配置（更新字段 + 持久化，保留其他厂商的 key） */
     private void saveAiConfig(String newKey, String newModelId) {
-        if (newModelId == null || !AIService.MODELS.containsKey(newModelId)) {
+        if (newModelId == null || newModelId.isEmpty()) {
             return;
         }
         currentModelId = newModelId;
-        String provider = AIService.MODELS.get(newModelId).provider;
-        AIService.saveConfig(provider, newKey);
+        AIService.saveConfig(currentAiProvider(), newKey);
         PropertiesComponent.getInstance().setValue("finance.ai.model", newModelId);
         currentApiKey = newKey;
     }
 
-    /** 显示 AI 设置对话框 */
+    /** 从应用级配置刷新模型选择（设置页可能被修改过），Key 异步刷新 */
+    private void refreshAiConfigFromStorage() {
+        String saved = PropertiesComponent.getInstance().getValue("finance.ai.model", "");
+        if (!saved.isEmpty()
+                && (AIService.isCustomModel(saved) || AIService.MODELS.containsKey(saved))) {
+            currentModelId = saved;
+        }
+        final String provider = currentAiProvider();
+        AIService.loadApiKeyAsync(provider).thenAccept(key ->
+                SwingUtilities.invokeLater(() -> currentApiKey = key));
+    }
+
+    /** 显示 AI 设置对话框（已打开则置前，避免重复弹窗） */
     public void showAiSettings() {
-        AISettingsDialog dialog = new AISettingsDialog(project, currentModelId);
-        dialog.setVisible(true);
-        if (dialog.isConfirmed()) {
-            saveAiConfig(dialog.getApiKey(), dialog.getModelId());
+        if (settingsDialog != null && settingsDialog.isVisible()) {
+            settingsDialog.toFront();
+            return;
+        }
+        refreshAiConfigFromStorage();
+        settingsDialog = new AISettingsDialog(project, this, currentModelId);
+        settingsDialog.setVisible(true);
+        if (settingsDialog.isConfirmed()) {
+            saveAiConfig(settingsDialog.getApiKey(), settingsDialog.getModelId());
         }
     }
 
     public void showAiAnalysis() {
         PluginLog.info("[WatchlistPanel] showAiAnalysis called");
+        refreshAiConfigFromStorage();
         if (aiDialog != null && aiDialog.isVisible()) {
             PluginLog.info("[WatchlistPanel] aiDialog already open, showing front");
             aiDialog.toFront();
@@ -714,11 +740,8 @@ public class WatchlistPanel extends JPanel {
         PluginLog.info("[WatchlistPanel] currentApiKey=" + (currentApiKey != null ? "len=" + currentApiKey.length() : "null"));
         if (currentApiKey.isEmpty()) {
             PluginLog.info("[WatchlistPanel] no apiKey, opening settings dialog");
-            AISettingsDialog dialog = new AISettingsDialog(project, currentModelId);
-            dialog.setVisible(true);
-            if (dialog.isConfirmed()) {
-                saveAiConfig(dialog.getApiKey(), dialog.getModelId());
-            } else {
+            showAiSettings();
+            if (currentApiKey.isEmpty()) {
                 PluginLog.info("[WatchlistPanel] settings dialog cancelled");
                 return;
             }
@@ -735,21 +758,87 @@ public class WatchlistPanel extends JPanel {
         final String systemPrompt = AIService.ANALYSIS_SYSTEM_PROMPT;
         java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
 
-        aiDialog = buildAiAnalysisDialog(marketName, systemPrompt, history);
+        aiDialog = buildAiChatDialog("AI 自选股分析", systemPrompt, history);
         PluginLog.info("[WatchlistPanel] dialog built, calling runAiAutoAnalysis");
         runAiAutoAnalysis(marketName, history);
     }
 
+    /** 快讯 AI 解读入口：后台补齐自选股名称后，在 AI 对话框发起解读，可继续追问 */
+    @SuppressWarnings("unchecked")
+    public void openNewsInterpretation(String newsTitle, String newsDigest) {
+        PluginLog.info("[WatchlistPanel] openNewsInterpretation: " + newsTitle);
+        refreshAiConfigFromStorage();
+        if (aiDialog != null && aiDialog.isVisible()) {
+            aiDialog.toFront();
+            return;
+        }
+        if (currentApiKey.isEmpty()) {
+            showAiSettings();
+            if (currentApiKey.isEmpty()) {
+                return;
+            }
+        }
+        final String title = newsTitle == null ? "" : newsTitle;
+        final String digest = newsDigest == null ? "" : newsDigest;
+        new Thread(() -> {
+            // 自选清单带上名称，AI 才能按行业/主题做关联（一次批量行情请求，失败降级为纯代码）
+            String brief;
+            List<String> codes = parseCodes();
+            if (codes.isEmpty()) {
+                brief = "（无）";
+            } else {
+                StringBuilder sb = new StringBuilder();
+                try {
+                    for (QuoteItem it : quoteService.fetchQuotes(codes)) {
+                        sb.append("- ").append(it.getName()).append("(").append(it.getCode()).append(")\n");
+                    }
+                } catch (Exception e) {
+                    PluginLog.info("[WatchlistPanel] 快讯解读取自选行情失败，降级为代码清单: " + e.getMessage());
+                }
+                if (sb.length() == 0) {
+                    for (String code : codes) {
+                        sb.append("- ").append(code).append("\n");
+                    }
+                }
+                brief = sb.toString();
+            }
+            String digestText = digest.isEmpty() || digest.equals(title) ? "（无，仅标题）" : digest;
+            // 自选清单附在系统提示里传给模型（关联分析用），不显示在用户气泡中
+            final String systemPrompt = AIService.NEWS_INTERPRET_PROMPT
+                    + "\n\n用户自选股清单：\n" + brief;
+            String firstMessage = "请解读以下财经快讯：\n【标题】" + title
+                    + "\n【摘要】" + digestText;
+            SwingUtilities.invokeLater(() -> {
+                if (aiDialog != null && aiDialog.isVisible()) {
+                    aiDialog.toFront();
+                    return;
+                }
+                List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
+                aiDialog = buildAiChatDialog("AI 快讯解读", systemPrompt, history);
+                JComponent loading = (JComponent) aiDialog.getRootPane().getClientProperty("loadingPanel");
+                if (loading != null) {
+                    loading.setVisible(false);
+                }
+                Object send = aiDialog.getRootPane().getClientProperty("sendMessage");
+                if (send instanceof java.util.function.Consumer) {
+                    ((java.util.function.Consumer<Object>) send).accept(firstMessage);
+                }
+            });
+        }).start();
+    }
+
     /**
-     * 构建 AI 分析聊天对话框
+     * 构建 AI 对话框（自选分析、快讯解读共用）
      */
     @SuppressWarnings("unchecked")
-    private JDialog buildAiAnalysisDialog(String marketName, String systemPrompt,
-                                          java.util.List<String> history) {
-        JDialog dialog = new JDialog((Frame) null, "AI 自选股分析", false);
+    private JDialog buildAiChatDialog(String title, String systemPrompt,
+                                      java.util.List<String> history) {
+        // 以当前 IDE 窗口为 owner 并相对其居中，与「添加」「设置」弹窗位置统一
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(this),
+                title, Dialog.ModalityType.MODELESS);
         dialog.setLayout(new BorderLayout());
         dialog.setSize(560, 460);
-        dialog.setLocationRelativeTo(this);
+        dialog.setLocationRelativeTo(SwingUtilities.getWindowAncestor(this));
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
 
         // ── 聊天区域（单个 JTextPane 拼 HTML） ──
@@ -848,9 +937,9 @@ public class WatchlistPanel extends JPanel {
         inputPanel.add(inputField, BorderLayout.CENTER);
         inputPanel.add(sendBtn, BorderLayout.EAST);
 
-        // ── 发送消息 ──
-        Runnable sendAction = () -> {
-            String userMsg = inputField.getText().trim();
+        // ── 发送消息：输入框回车/按钮触发；外部入口（快讯解读）经 clientProperty 拿 sendMessage 首发提问 ──
+        java.util.function.Consumer<String> sendMessage = text -> {
+            String userMsg = text == null ? "" : text.trim();
             if (userMsg.isEmpty()) return;
             inputField.setText("");
             history.add(userMsg);
@@ -859,10 +948,9 @@ public class WatchlistPanel extends JPanel {
             sendBtn.setEnabled(false);
 
             String key = currentApiKey;
-            String model = currentModelId;
             new Thread(() -> {
                 try {
-                    new AIService(key, model).chatAsync(systemPrompt, history).thenAccept(result -> {
+                    createAiService(key).chatAsync(systemPrompt, history).thenAccept(result -> {
                         SwingUtilities.invokeLater(() -> {
                             thinkingPanel.setVisible(false);
                             sendBtn.setEnabled(true);
@@ -891,6 +979,7 @@ public class WatchlistPanel extends JPanel {
             }).start();
         };
 
+        Runnable sendAction = () -> sendMessage.accept(inputField.getText());
         sendBtn.addActionListener(e -> sendAction.run());
         inputField.addActionListener(e -> sendAction.run());
 
@@ -915,6 +1004,7 @@ public class WatchlistPanel extends JPanel {
         dialog.getRootPane().putClientProperty("loadingPanel", loadingPanel);
         dialog.getRootPane().putClientProperty("loadingLabel", loadingLabel);
         dialog.getRootPane().putClientProperty("appendMessage", appendMessage);
+        dialog.getRootPane().putClientProperty("sendMessage", sendMessage);
 
         dialog.setVisible(true);
         return dialog;
@@ -952,10 +1042,9 @@ public class WatchlistPanel extends JPanel {
                     loadingLabel.setText("正在分析 " + items.size() + " 只自选股..."));
 
             String key = currentApiKey;
-            String model = currentModelId;
-            PluginLog.info("[WatchlistPanel] using apiKey_len=" + (key != null ? key.length() : 0) + ", model=" + model);
+            PluginLog.info("[WatchlistPanel] using apiKey_len=" + (key != null ? key.length() : 0) + ", model=" + currentModelId);
             try {
-                new AIService(key, model).analyzeWatchlistAsync(finalItems, marketName)
+                createAiService(key).analyzeWatchlistAsync(finalItems, marketName)
                     .orTimeout(60, TimeUnit.SECONDS)
                     .thenAccept(result -> {
                         PluginLog.info("[WatchlistPanel] analyzeWatchlistAsync SUCCESS, result_len=" +

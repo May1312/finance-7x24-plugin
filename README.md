@@ -5,6 +5,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 ## 功能
 
 - 在 IDEA 右侧工具窗口展示 7x24 财经快讯
+- 快讯卡片右上角「AI 解读」：一句话定性利多/利空、关联自选股说明影响、给出后续跟踪点，解读结果在 AI 对话框中可继续追问
 - 快讯支持自动刷新、手动刷新和内容自动换行
 - 提供自选行情标签页，支持股票、ETF 和指数代码
 - 自选列表名称与代码两行展示
@@ -18,7 +19,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 - 搜索框可搜索 A 股、港股、美股（带市场标签）
 - 底部展示大盘指数实时行情，按当前市场筛选标签自动切换（A股/港股/美股/黄金指数）
 - **AI 自选股分析**：基于实时行情一键分析自选组合，自动接入日K均线数据（MA5/10/20/60），支持多轮追问对话
-- AI 支持多厂商模型切换：商汤 SenseNova、智谱 GLM（均提供免费模型）
+- AI 支持多厂商模型切换：商汤 SenseNova、智谱 GLM（均提供免费模型），也支持自定义任意 OpenAI 兼容接口（BaseURL + 模型 ID + Key）
 - AI 对话气泡界面自适应 IDEA 深色 / 浅色主题
 
 ## AI 自选股分析
@@ -31,6 +32,9 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 |------|------|------|
 | 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2`、`kimi-k3` | 免费模型，需注册获取 API Key |
 | 智谱 GLM | `glm-4-flash` | 免费模型，需注册获取 API Key |
+| 自定义 | 任意模型 ID | 任意 OpenAI 兼容接口：DeepSeek / Moonshot / 硅基流动 / OpenRouter / one-api 中转 / 本地 Ollama 等 |
+
+厂商选择「自定义 (OpenAI 兼容)」后，填入接口地址（BaseURL，自动补全 `/chat/completions`）、模型 ID 与 API Key 即可；Key 同样仅保存在本机凭据存储。
 
 ### 首次使用
 
@@ -38,7 +42,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 2. 在弹出的设置对话框中，选择厂商与模型，填入对应的 API Key
 3. 点击「保存」后即可自动发起首次分析
 
-之后点击 AI 分析会直接基于最新行情生成分析，无需重复配置；如需更换 Key 或模型，可从 AI 对话框右上角再次打开设置。
+设置也可以在 **IDE 设置（Settings → Tools → Finance 7x24 News AI）** 中完成，两处入口共用同一份配置；之后点击 AI 分析会直接基于最新行情生成分析，无需重复配置，如需更换 Key 或模型，可从 AI 对话框右上角再次打开设置。
 
 ### 数据与隐私
 
