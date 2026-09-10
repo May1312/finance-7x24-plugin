@@ -32,7 +32,7 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 |------|------|------|
 | 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2`、`kimi-k3` | 免费模型，需注册获取 API Key |
 | 智谱 GLM | `glm-4-flash` | 免费模型，需注册获取 API Key |
-| 自定义 | 任意模型 ID | 任意 OpenAI 兼容接口：DeepSeek / Moonshot / 硅基流动 / OpenRouter / one-api 中转 / 本地 Ollama 等 |
+| 自定义 | 任意模型 ID | 任意 OpenAI 兼容接口：中转代理、私有部署、本地推理服务等 |
 
 厂商选择「自定义 (OpenAI 兼容)」后，填入接口地址（BaseURL，自动补全 `/chat/completions`）、模型 ID 与 API Key 即可；Key 同样仅保存在本机凭据存储。
 

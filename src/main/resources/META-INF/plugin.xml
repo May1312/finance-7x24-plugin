@@ -1,12 +1,12 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
-        Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, and AI portfolio analysis with multi-turn chat.
+        Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, one-click AI news interpretation, and AI portfolio analysis with multi-turn chat.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯、自选行情并进行 AI 分析。支持 A股、港股、美股、国际金价自选行情，多数据源兜底，各市场按开市时段自动刷新；AI 自选股分析支持商汤 SenseNova、智谱 GLM 多厂商模型，可多轮追问。
+        在 IDEA 中查看公开财经快讯、自选行情并进行 AI 分析。支持 A股、港股、美股、国际金价自选行情，多数据源兜底，各市场按开市时段自动刷新；AI 支持快讯解读与自选股分析、多轮追问，模型可选商汤 SenseNova、智谱 GLM，也支持自定义任意 OpenAI 兼容接口。
         <br/><br/>
         本插件为非官方插件，与相关数据服务商及其关联公司无隶属、授权、认可或赞助关系。
         插件仅用于便捷查看公开财经资讯，不提供投资建议，行情数据可能存在延迟、遗漏或错误。
@@ -16,11 +16,12 @@
 
     <change-notes><![CDATA[
         <ul>
-            <li>新增：商汤 SenseNova 渠道支持 kimi-k3 模型；采样温度按模型注册值下发（kimi-k3 仅接受 temperature=1）</li>
-            <li>新增：自选行情全局共享——自选代码、排序、市场筛选与大盘选择存入应用级配置，同一 IDE 的多个项目共用一份，旧版项目级数据首次运行自动迁移</li>
-            <li>新增：自选列表名称与代码两行式展示，代码以小号灰字显示在名称下方</li>
-            <li>修复：自选为空时状态栏误显示「闭市中」，现提示通过「添加」按钮添加自选，底部大盘指数照常刷新</li>
-            <li>修复：名称列渲染器遮挡表格行分隔线的问题，行线恢复贯通整行</li>
+            <li>新增：支持自定义 OpenAI 兼容渠道——填入接口地址（BaseURL 自动规范化并补全 /chat/completions）、模型 ID 与 API Key，即可接入任意兼容端点</li>
+            <li>新增：快讯卡片右上角「AI 解读」——一句话定性利多/利空/中性并指向板块，对照自选股逐只说明关联逻辑与影响方向，给出后续跟踪点；结果在 AI 对话框中可继续追问</li>
+            <li>新增：AI 设置接入 IDE 设置页（Settings → Tools → Finance 7x24 News AI），与设置对话框共用同一份配置，两处入口一致</li>
+            <li>优化：工具窗口标题栏常驻「AI 设置」快捷入口，移除自选页冗余设置按钮</li>
+            <li>优化：AI 设置对话框首次打开居中、位置会话内记忆、已打开置前防重复、高度按内容自适应，厂商切换不再跳动</li>
+            <li>安全：自定义渠道的 API Key 同样仅保存在本机凭据存储（macOS 钥匙串 / Windows 凭据管理器 / KeePass）</li>
         </ul>
     ]]></change-notes>
 
