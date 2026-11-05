@@ -19,34 +19,41 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 - 搜索框可搜索 A 股、港股、美股（带市场标签）
 - 底部展示大盘指数实时行情，按当前市场筛选标签自动切换（A股/港股/美股/黄金指数）
 - **AI 自选股分析**：基于实时行情一键分析自选组合，自动接入日K均线数据（MA5/10/20/60），支持多轮追问对话
-- AI 支持多厂商模型切换：商汤 SenseNova、智谱 GLM（均提供免费模型），也支持自定义任意 OpenAI 兼容接口（BaseURL + 模型 ID + Key）
-- AI 对话气泡界面自适应 IDEA 深色 / 浅色主题
+- **AI速览**：汇总最近一批快讯要点，按三段中文结构输出，可在对话框中继续追问
+- **多份 AI 服务配置**：可保存多份独立的接口地址 / 模型 ID / API Key，随时切换；内置常用服务预设模板，也支持任意 OpenAI 兼容接口
+- 工具窗口标题栏常驻「AI速览」「AI选股分析」「AI 设置」快捷入口，快讯 / 自选任意页签下都能一键直达
+- AI 对话气泡界面自适应 IDEA 深色 / 浅色主题，Esc 可收起会话并原样恢复
 
-## AI 自选股分析
+## AI 功能
 
-自选页提供 **AI 分析** 功能，可对当前市场筛选下的自选组合进行综合研判，并支持追问的多轮对话。
+### 入口
 
-### 支持的厂商与模型
+工具窗口标题栏右侧常驻三个图标入口，悬停显示名称，快讯 / 自选任意页签下都可直接点击：
 
-| 厂商 | 模型 | 说明 |
-|------|------|------|
-| 商汤 SenseNova | `deepseek-v4-flash`、`sensenova-6.8-flash-lite`、`glm-5.2`、`kimi-k3` | 免费模型，需注册获取 API Key |
-| 智谱 GLM | `glm-4-flash` | 免费模型，需注册获取 API Key |
-| 自定义 | 任意模型 ID | 任意 OpenAI 兼容接口：中转代理、私有部署、本地推理服务等 |
+- **AI速览**：汇总最近一批快讯要点，按三段中文结构输出，可继续追问
+- **AI选股分析**：分析当前市场筛选下的自选组合，支持多轮追问
+- **AI 设置**：打开设置对话框
 
-厂商选择「自定义 (OpenAI 兼容)」后，填入接口地址（BaseURL，自动补全 `/chat/completions`）、模型 ID 与 API Key 即可；Key 同样仅保存在本机凭据存储。
+### AI 服务配置
+
+设置入口：工具窗口标题栏齿轮，或 **IDE 设置（Settings → Tools → Finance 7x24 News AI）**，两处共用同一份配置。
+
+可保存多份独立配置，每份包含名称、接口地址（BaseURL，自动补全 `/chat/completions`）、模型 ID 与 API Key；配置下拉中选中的一份即为当前使用的服务，支持新建、删除、改名与随时切换。每份 Key 按配置单独加密保存，互不覆盖；删除配置时同步清除对应凭据。
+
+新建配置时可从预设模板一键填充常用服务参数（商汤 SenseNova、智谱 GLM 等），也可选「空白配置」接入任意 OpenAI 兼容端点（中转代理、私有部署、本地推理服务等）。旧版单份自定义配置与内置模型选择会在升级后自动迁移成配置列表。
 
 ### 首次使用
 
-1. 点击自选页的 **AI 分析** 按钮
-2. 在弹出的设置对话框中，选择厂商与模型，填入对应的 API Key
-3. 点击「保存」后即可自动发起首次分析
+1. 点击工具窗口标题栏的齿轮（AI 设置）
+2. 点「新建」选一个预设模板，或直接在默认配置上填写接口地址与模型 ID
+3. 填入对应服务的 API Key，点「测试连接」确认可用，再点「保存」
+4. 点击标题栏的「AI速览」或「AI选股分析」即可发起
 
-设置也可以在 **IDE 设置（Settings → Tools → Finance 7x24 News AI）** 中完成，两处入口共用同一份配置；之后点击 AI 分析会直接基于最新行情生成分析，无需重复配置，如需更换 Key 或模型，可从 AI 对话框右上角再次打开设置。
+之后点击入口会直接基于最新行情生成，无需重复配置；更换 Key、模型或切换服务，随时回到设置页修改。
 
 ### 数据与隐私
 
-- API Key 保存在 IDE 的凭据存储中（PasswordSafe，对应 macOS 钥匙串 / Windows 凭据管理器 / Linux KeePass），不明文落盘
+- API Key 保存在 IDE 的凭据存储中（PasswordSafe，对应 macOS 钥匙串 / Windows 凭据管理器 / Linux KeePass），每份配置独立一条、切换或删除互不影响，不明文落盘
 - 旧版本曾将 Key 明文保存在 `~/.finance7x24_ai_config.json`；升级后会自动将该文件中的 Key 迁移到凭据存储，并从原文件剔除，无残留 Key 时删除该文件
 - 发送给 AI 服务的内容仅包含自选代码与实时行情数据（不含 IDE 内其他信息）
 - AI 输出基于模型生成，仅供参考，不构成任何投资建议
@@ -84,14 +91,16 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 代码结构（`src/main/java/com/plugin/finance/`）：
 
 ```
-├── KuaixunToolWindowFactory   # 工具窗口入口
-├── KuaixunPanel               # 快讯页：卡片列表 + 20秒自动刷新
+├── KuaixunToolWindowFactory   # 工具窗口入口，注册标题栏 AI 快捷入口
+├── KuaixunPanel               # 快讯页：卡片列表 + 自动刷新 + 页签容器
 ├── WatchlistPanel             # 自选页：行情表格 / 市场筛选 / 大盘指数 / AI 对话框
 ├── QuoteService                # 行情多级兜底 + 日K均线计算
 ├── KuaixunService              # 快讯接口
 ├── StockSearchDialog/Service   # 股票搜索
-├── AIService                   # AI 厂商模型注册 / 提示词 / Key 凭据存储 / 接口调用
-├── AISettingsDialog            # AI 设置对话框
+├── AIService                   # 预设模板 / 多配置持久化与迁移 / 提示词 / Key 凭据存储 / 接口调用
+├── AISettingsPanel             # 设置表单（配置列表 + 编辑 + 测试连接），设置页与对话框共用
+├── AISettingsDialog/Configurable  # 设置对话框 / IDE 设置页
+├── AiQuickActions / ShowAiSettingsAction  # 工具窗口标题栏快捷入口
 └── 其余为模型类与工具类          # QuoteItem / KuaixunItem / MarketType / CodeUtils / GoldInstrument
 ```
 

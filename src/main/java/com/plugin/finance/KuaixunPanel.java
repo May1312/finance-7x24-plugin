@@ -11,6 +11,7 @@ import javax.swing.ScrollPaneConstants;
 import java.awt.*;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,6 +27,8 @@ public class KuaixunPanel extends JPanel {
     private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
     private int currentPage = 1;
     private final Set<String> knownIds = ConcurrentHashMap.newKeySet();
+    /** 最近一次成功加载的最新一批快讯，供「速览」使用；统一在 EDT 内整体替换 */
+    private volatile List<KuaixunItem> latestItems = new ArrayList<>();
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     private boolean isRefreshing = false;
 
@@ -77,6 +80,8 @@ public class KuaixunPanel extends JPanel {
         tabs.addTab("快讯", newsPanel);
         watchlistPanel = new WatchlistPanel(project);
         tabs.addTab("自选", watchlistPanel);
+
+        // AI 入口全部收进工具窗口标题栏（见 AiQuickActions），内容区不再有独立按钮条
         add(tabs, BorderLayout.CENTER);
 
         // 统一用一个1秒tick的timer：倒计时+到0触发刷新，避免两个timer不同步
@@ -164,6 +169,7 @@ public class KuaixunPanel extends JPanel {
             try {
                 List<KuaixunItem> items = service.fetchPage(page);
                 SwingUtilities.invokeLater(() -> {
+                    latestItems = new ArrayList<>(items);
                     for (int i = items.size() - 1; i >= 0; i--) {
                         KuaixunItem item = items.get(i);
                         String id = item.getId();
@@ -216,6 +222,7 @@ public class KuaixunPanel extends JPanel {
                     final List<KuaixunItem> items = get();
                     final boolean hasNew = determineHasNew(items);
                     SwingUtilities.invokeLater(() -> {
+                        latestItems = new ArrayList<>(items);
                         // 恢复卡片外观
                         for (int i = cardsPanel.getComponentCount() - 1; i >= 0; i--) {
                             Component c = cardsPanel.getComponent(i);
@@ -277,6 +284,7 @@ public class KuaixunPanel extends JPanel {
         new Thread(() -> {
             try {
                 List<KuaixunItem> items = service.fetchPage(1);
+                SwingUtilities.invokeLater(() -> latestItems = new ArrayList<>(items));
                 boolean hasNew = false;
                 for (int i = items.size() - 1; i >= 0; i--) {
                     KuaixunItem item = items.get(i);
@@ -339,6 +347,21 @@ public class KuaixunPanel extends JPanel {
     /** 打开 AI 模型设置（供工具窗口标题栏快捷入口调用） */
     public void openAiSettings() {
         watchlistPanel.showAiSettings();
+    }
+
+    /** 标题栏「AI速览」入口：把缓存的最新一批快讯交给 AI 汇总（空数据由下游统一提示） */
+    public void openAiSummary() {
+        watchlistPanel.openNewsSummary(latestItems);
+    }
+
+    /** 标题栏「AI选股分析」入口：直接发起自选股分析，无需先切到自选页 */
+    public void openAiStockAnalysis() {
+        watchlistPanel.showAiAnalysis();
+    }
+
+    /** 转发自选页当前市场筛选名，供标题栏入口的动态提示使用 */
+    public String currentMarketName() {
+        return watchlistPanel.currentMarketName();
     }
 
     private JPanel createCard(KuaixunItem item) {

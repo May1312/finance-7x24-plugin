@@ -10,7 +10,7 @@
 |------|--------|------|
 | 快讯 | KuaixunService / KuaixunPanel | 拉取东方财富 7x24 快讯，卡片流展示 + 自动刷新 |
 | 行情 | QuoteService / WatchlistPanel / StockSearchDialog | 自选行情多级兜底拉取、日K均线、市场筛选、大盘指数 |
-| AI | AIService / AISettingsDialog / WatchlistPanel 内嵌对话框 | 免费大模型 API 的自选组合分析与多轮追问 |
+| AI | AiQuickActions / AIService / AISettingsPanel / WatchlistPanel 内嵌对话框 | 多配置管理、快讯速览与自选组合分析、多轮追问 |
 
 ## 入口与页面结构
 
@@ -70,11 +70,13 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ## AI 模块
 
-### 厂商与模型注册
+### 预设模板与多配置
 
-`AIService` 的 static 块通过 `registerProvider` / `registerModel` 注册厂商与模型信息（id、展示名、apiUrl、是否免费、允许的采样温度），维护 `MODELS`（id → ModelInfo）与 `PROVIDER_MODELS`（厂商 → 模型列表）两张表供设置对话框联动。新增厂商/模型只需在此追加一行。
+`AIService` 不再维护运行时厂商 / 模型注册表。`PRESETS` 仅作为「新建配置」时的一键填充模板（商汤 SenseNova、智谱 GLM 常用模型 + 空白配置），每项含接口地址、模型 ID、采样温度与是否附加 `reasoning_effort=none`。
 
-自定义渠道：厂商表里有固定的「自定义 (OpenAI 兼容)」（`CUSTOM_PROVIDER`），无预置模型；设置对话框选中后隐藏模型下拉，切换为 BaseURL + 模型 ID 输入行。保存时 BaseURL/模型名写应用级 `finance.ai.custom.baseurl` / `finance.ai.custom.model`，`finance.ai.model` 记为哨兵值 `custom`（`CUSTOM_MODEL_ID`），Key 存 PasswordSafe 的自定义厂商名下。`AIService(apiKey, modelId, customBaseUrl)` 三参构造走自定义端点——BaseURL 经 `normalizeBaseUrl` 规范化并自动补全 `/chat/completions`；自定义模式不发 `reasoning_effort`、采样温度走默认值。
+实际生效的数据是 `AiProfile`（id、名称、BaseURL、模型 ID、temperature、reasoningEffortNone、registerUrl、legacyKeySlot）：列表以 JSON 存应用级 `finance.ai.profiles`，启用项存 `finance.ai.profile`。每份配置的 Key 按 `profile:<id>` 凭据槽单独存 PasswordSafe，互不覆盖。`AIService(apiKey, AiProfile)` 按配置构造——BaseURL 经 `normalizeBaseUrl` 规范化并自动补全 `/chat/completions`，采样参数取实例字段；旧的两参 / 三参构造器降级为兼容适配。
+
+旧版迁移 `migrateLegacyProfiles` 在首次读取时把 `finance.ai.custom.*` 与 `finance.ai.model` 转成配置列表，旧 Key 只记录原槽位，由 `migrateProfileKey` 在后台首次读 Key 时懒迁移，避免升级启动同步访问钥匙串卡住 EDT。
 
 ### API Key 安全存储（v2.1.0 起）
 
@@ -90,7 +92,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 - **首轮分析** `analyzeWatchlistAsync`：后台拉均线（失败降级无均线）→ 构建上下文 → 以 `ANALYSIS_SYSTEM_PROMPT` 调模型 → `enforceConsistency` 后处理。
 - **追问聊天** `chatAsync`：对话历史按下标定角色（偶数位 user、奇数位 assistant），先做 snapshot 防并发修改，再注入基线后发整段 messages。
-- **HTTP 层** `callAPI`：temperature 0.3、max_tokens 4000；`reasoning_effort=none` 仅商汤渠道附加；401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出。
+- **HTTP 层** `callAPI`：temperature 与 `reasoning_effort` 由当前配置的实例字段决定（默认 0.3；kimi-k3 预设为 1，商汤预设附加 `reasoning_effort=none`），max_tokens 4000；401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出。
 - **解析** `extractResponseText`：依次尝试 `choices[0].message.content` → `reasoning_content` → `reasoning`；无法识别的结构只写日志、不把原文回显给用户（防敏感信息泄露）。输出统一过 `stripMarkdown` 去除 markdown 符号以适配 Swing 纯文本气泡。
 
 ### 输出确定性与跨轮一致性
@@ -100,10 +102,11 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ## 设置入口与对话框
 
-- **AISettingsPanel**：AI 设置表单（厂商/模型、自定义 BaseURL+模型 ID、Key、测试连接），由 `AISettingsDialog`（工具窗口「设置」按钮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。
-- **AISettingsDialog**：薄壳对话框，只负责窗口尺寸/居中与取消/保存按钮；自定义渠道校验必填后保存。
-- **AISettingsConfigurable**：标准 Configurable 生命周期（isModified/apply/reset）；`isModified` 中 Key 与内存缓存（`getCachedApiKey`）比较，避免首次访问系统钥匙串阻塞设置页。设置页保存后，工具窗口在下次进入 AI 分析/解读入口时经 `refreshAiConfigFromStorage` 拾取新配置。
-- **AI 对话框**（内嵌于 WatchlistPanel）：聊天区是单个 JTextPane 拼 HTML；由于 Swing 只支持 HTML 3.2 且不支持 rgba，气泡颜色按面板背景亮度预计算并预融合；跨组件引用（loadingPanel/loadingLabel/appendMessage/sendMessage 回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 关闭，重复点 AI 分析按钮只会 toFront 已有对话框。
+- **AISettingsPanel**：多配置表单（配置下拉 + 新建/删除、名称/地址/模型/Key 编辑、测试连接），由 `AISettingsDialog`（工具窗口标题栏齿轮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。切换配置时表单值写回上一份、Key 异步回填且互不覆盖；测试连接期间按钮禁用并显示耗时进度，结束就地回显结果。
+- **AISettingsDialog**：薄壳对话框，只负责窗口尺寸/居中与取消/保存按钮；保存前统一校验所有配置的地址/模型/名称，再整体落盘。
+- **AISettingsConfigurable**：标准 Configurable 生命周期（isModified/apply/reset）；`isModified` 用面板快照 `getSnapshot()` 比较，快照不含异步回填的 Key 值，避免钥匙串首访导致误判或阻塞设置页。保存后工具窗口下次进入 AI 入口时经 `refreshAiConfigFromStorage` 重读配置。
+- **AI 对话框**（内嵌于 WatchlistPanel）：聊天气泡改为自绘圆角面板（不再拼 HTML），主题色取 `JBColor`；跨组件引用（loadingPanel / appendMessage / sendMessage / sendMessageSilent / setRequesting 等回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 收起（`setVisible(false)`）保留会话、再点同一入口恢复；标题栏关闭按钮仍为 `DISPOSE_ON_CLOSE`，可彻底重开一轮。三类会话按入口分别存在 `aiDialogs` 里互不串台，收起期间的流式回调改用 `isDisplayable()` 判断继续写入；生成期间发送按钮切换为「停止」。
+- **标题栏入口** `AiQuickActions` / `ShowAiSettingsAction`：通过 `toolWindow.setTitleActions` 注册，Action 从 ToolWindow Content 反查 `KuaixunPanel` 再触发对应入口，快讯 / 自选任意页签下都能一键直达。
 
 ## 线程模型
 
@@ -133,9 +136,9 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 迁移：2.1.0 及之前这些键存在项目级配置（各项目一份，互不相通）。升级后 `WatchlistPanel` 构造时执行 `migrateProjectScopedSettings`，把当前项目的旧值补种到应用级——仅当应用级从未写入过该键时才补种，因此用户在应用级已做的修改或清空不会被其他项目的旧数据覆盖。
 
-应用级 PropertiesComponent：`finance.ai.model`（选中的模型 id）。
+应用级 PropertiesComponent：`finance.ai.profiles`（配置列表 JSON）、`finance.ai.profile`（启用配置 id）、`finance.ai.names.cleaned`（一次性名称规范化标记）。旧版 `finance.ai.model` / `finance.ai.custom.baseurl` / `finance.ai.custom.model` 只作迁移来源，不再写入。
 
-PasswordSafe：子系统 `Finance7x24AI`，按厂商名各存一条 Credentials。
+PasswordSafe：子系统 `Finance7x24AI`，按配置凭据槽 `profile:<id>` 各存一条 Credentials；旧版按厂商名存放的槽位仅用于懒迁移。
 
 沙箱调试的数据落在 `.intellijPlatform/sandbox/` 下（不入库）。
 

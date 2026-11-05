@@ -1,6 +1,5 @@
 package com.plugin.finance;
 
-import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import org.jetbrains.annotations.Nls;
@@ -17,6 +16,7 @@ import java.awt.BorderLayout;
 public class AISettingsConfigurable implements Configurable {
 
     private AISettingsPanel panel;
+    private String initialSnapshot = "";
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
@@ -27,7 +27,7 @@ public class AISettingsConfigurable implements Configurable {
     @Override
     public @Nullable JComponent createComponent() {
         panel = new AISettingsPanel();
-        panel.loadSelection(PropertiesComponent.getInstance().getValue("finance.ai.model", ""));
+        initialSnapshot = panel.getSnapshot();
         // 设置页通常很高：表单必须顶部对齐、只占首选高度，
         // 否则 BoxLayout 会把每一行拉伸到满屏（下拉框变成巨型控件）
         JPanel wrapper = new JPanel(new BorderLayout());
@@ -38,27 +38,7 @@ public class AISettingsConfigurable implements Configurable {
 
     @Override
     public boolean isModified() {
-        if (panel == null) {
-            return false;
-        }
-        String savedModel = PropertiesComponent.getInstance().getValue("finance.ai.model", "");
-        String selected = panel.getSelectedModelId();
-        if (!selected.equals(savedModel)) {
-            return true;
-        }
-        if (panel.isCustomSelected()) {
-            if (!panel.getBaseUrlInput().equals(AIService.getCustomBaseUrl())
-                    || !panel.getCustomModelInput().equals(AIService.getCustomModelName())) {
-                return true;
-            }
-            // Key 与内存缓存比较，避免首次访问系统钥匙串阻塞设置页
-            return !panel.getKeyInput().equals(AIService.getCachedApiKey(AIService.CUSTOM_PROVIDER));
-        }
-        AIService.ModelInfo info = AIService.MODELS.get(selected);
-        if (info == null) {
-            return false;
-        }
-        return !panel.getKeyInput().equals(AIService.getCachedApiKey(info.provider));
+        return panel != null && !initialSnapshot.equals(panel.getSnapshot());
     }
 
     @Override
@@ -66,27 +46,19 @@ public class AISettingsConfigurable implements Configurable {
         if (panel == null) {
             return;
         }
-        String modelId = panel.getSelectedModelId();
-        String key = panel.getKeyInput();
-        String provider;
-        if (panel.isCustomSelected()) {
-            if (panel.getBaseUrlInput().isEmpty() || panel.getCustomModelInput().isEmpty()) {
-                throw new ConfigurationException("请填写自定义渠道的接口地址与模型 ID");
-            }
-            AIService.saveCustomConfig(panel.getBaseUrlInput(), panel.getCustomModelInput());
-            provider = AIService.CUSTOM_PROVIDER;
-        } else {
-            AIService.ModelInfo info = AIService.MODELS.get(modelId);
-            provider = info != null ? info.provider : AIService.PROVIDERS.get(0);
+        String error = panel.validationError();
+        if (error != null) {
+            throw new ConfigurationException(error);
         }
-        AIService.saveConfig(provider, key);
-        PropertiesComponent.getInstance().setValue("finance.ai.model", modelId);
+        panel.applyToStorage();
+        initialSnapshot = panel.getSnapshot();
     }
 
     @Override
     public void reset() {
         if (panel != null) {
-            panel.loadSelection(PropertiesComponent.getInstance().getValue("finance.ai.model", ""));
+            panel.resetFromStorage();
+            initialSnapshot = panel.getSnapshot();
         }
     }
 

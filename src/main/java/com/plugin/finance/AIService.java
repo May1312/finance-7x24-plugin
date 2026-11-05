@@ -3,6 +3,7 @@ package com.plugin.finance;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.CredentialAttributesKt;
 import com.intellij.credentialStore.Credentials;
@@ -39,96 +40,116 @@ import java.util.concurrent.TimeUnit;
 
 public class AIService {
 
-    public static class ProviderInfo {
-        public final String displayName;
-        public final String registerUrl;
-
-        public ProviderInfo(String displayName, String registerUrl) {
-            this.displayName = displayName;
-            this.registerUrl = registerUrl;
-        }
-    }
-
-    /** 采样温度默认值；个别模型只接受特定值（如 kimi-k3 仅允许 1），注册时单独指定 */
+    /** 采样温度默认值；个别模型只接受特定值（如 kimi-k3 仅允许 1），预设里单独指定 */
     private static final double DEFAULT_TEMPERATURE = 0.3;
 
-    public static class ModelInfo {
-        public final String id;
-        public final String displayName;
-        public final String provider;
-        public final String apiUrl;
-        public final boolean free;
-        /** 该模型允许的采样温度 */
+    /** 新建配置时的一键填充模板。内置渠道已不再是运行时注册表：
+     *  所有可用服务都存成 {@link AiProfile}，可新增多份、随时切换、任意改名与改地址。 */
+    public static class Preset {
+        public final String name;
+        public final String baseUrl;
+        public final String model;
         public final double temperature;
+        public final boolean reasoningEffortNone;
+        public final String registerUrl;
+        /** 旧版 Key 存在哪个厂商槽位下，仅迁移时用 */
+        public final String legacyProvider;
 
-        public ModelInfo(String id, String displayName, String provider, String apiUrl, boolean free) {
-            this(id, displayName, provider, apiUrl, free, DEFAULT_TEMPERATURE);
-        }
-
-        public ModelInfo(String id, String displayName, String provider, String apiUrl, boolean free, double temperature) {
-            this.id = id;
-            this.displayName = displayName;
-            this.provider = provider;
-            this.apiUrl = apiUrl;
-            this.free = free;
+        Preset(String name, String baseUrl, String model, double temperature,
+               boolean reasoningEffortNone, String registerUrl, String legacyProvider) {
+            this.name = name;
+            this.baseUrl = baseUrl;
+            this.model = model;
             this.temperature = temperature;
+            this.reasoningEffortNone = reasoningEffortNone;
+            this.registerUrl = registerUrl;
+            this.legacyProvider = legacyProvider;
         }
 
-        public String fullDisplayName() {
-            return provider + " · " + displayName + (free ? "（免费）" : "（付费）");
+        /** 按模板生成一份独立配置（每次新建都换 id，互不干扰） */
+        public AiProfile newProfile() {
+            AiProfile p = new AiProfile();
+            p.id = newProfileId();
+            p.name = name;
+            p.baseUrl = baseUrl;
+            p.model = model;
+            p.temperature = temperature;
+            p.reasoningEffortNone = reasoningEffortNone;
+            p.registerUrl = registerUrl;
+            return p;
         }
     }
 
-    // 厂商列表
-    public static final List<String> PROVIDERS = new ArrayList<>();
-    // 厂商信息（注册地址等）
-    public static final Map<String, ProviderInfo> PROVIDER_INFO = new LinkedHashMap<>();
-    // 所有模型（按 ID 索引）
-    public static final Map<String, ModelInfo> MODELS = new LinkedHashMap<>();
-    // 厂商 → 模型列表
-    public static final Map<String, List<ModelInfo>> PROVIDER_MODELS = new LinkedHashMap<>();
+    /** 一份 AI 服务配置。API Key 不写进 JSON，按 {@link #keySlot()} 单独存 PasswordSafe，
+     *  因此多个平台 / 多个模型的 Key 不会互相覆盖。 */
+    public static class AiProfile {
+        public String id = "";
+        public String name = "";
+        /** 用户填写的原始地址，末尾 /chat/completions 由 normalizeBaseUrl 自动补全 */
+        public String baseUrl = "";
+        /** 请求体里的真实模型 ID */
+        public String model = "";
+        public double temperature = DEFAULT_TEMPERATURE;
+        /** 仅商汤 SenseNova 需要 reasoning_effort=none，其他平台带上会报错 */
+        public boolean reasoningEffortNone = false;
+        /** 申请 Key 的提示文案，仅用于设置页说明 */
+        public String registerUrl = "";
+        /** 旧版 Key 所在的凭据槽；首次读取该配置时懒迁移，避免启动时同步访问钥匙串 */
+        public String legacyKeySlot = "";
 
-    /** 自定义 OpenAI 兼容渠道：厂商名、固定模型 ID 哨兵与持久化键 */
-    public static final String CUSTOM_PROVIDER = "自定义 (OpenAI 兼容)";
-    public static final String CUSTOM_MODEL_ID = "custom";
-    private static final String CUSTOM_BASEURL_KEY = "finance.ai.custom.baseurl";
-    private static final String CUSTOM_MODEL_NAME_KEY = "finance.ai.custom.model";
+        public String keySlot() {
+            return KEY_SLOT_PREFIX + id;
+        }
+
+        public String displayName() {
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
+            return model == null || model.isEmpty() ? "未命名配置" : model;
+        }
+    }
+
+    /** 预设模板：只在「新建配置」时用于填充，界面上不再是写死的内置渠道 */
+    public static final List<Preset> PRESETS = new ArrayList<>();
+
+    // ── 配置持久化键 ──
+    private static final String PROFILES_KEY = "finance.ai.profiles";
+    private static final String ACTIVE_PROFILE_KEY = "finance.ai.profile";
+    /** 一次性规范化标记：清理旧版渠道名遗留的「自定义 · 」前缀 */
+    private static final String NAME_PREFIX_CLEANED_KEY = "finance.ai.names.cleaned";
+    private static final String LEGACY_MODEL_KEY = "finance.ai.model";
+    private static final String LEGACY_BASEURL_KEY = "finance.ai.custom.baseurl";
+    private static final String LEGACY_MODEL_NAME_KEY = "finance.ai.custom.model";
+    /** 配置 Key 在 PasswordSafe 中的凭据槽前缀，与旧版「厂商名」槽位区分 */
+    private static final String KEY_SLOT_PREFIX = "profile:";
+    /** 旧版自定义渠道 Key 的槽名与模型哨兵，仅迁移时用 */
+    private static final String CUSTOM_PROVIDER = "自定义 (OpenAI 兼容)";
+    private static final String CUSTOM_MODEL_ID = "custom";
+
+    private static final String SENSENOVA_URL = "https://token.sensenova.cn/v1";
+    private static final String SENSENOVA_REGISTER = "https://platform.sensenova.cn  →  API Keys → 新建 API Key";
+    private static final String SENSENOVA_PROVIDER = "商汤 SenseNova";
+    private static final String ZHIPU_URL = "https://open.bigmodel.cn/api/paas/v4";
+    private static final String ZHIPU_REGISTER = "https://open.bigmodel.cn  →  API Keys → 新建 API Key";
+    private static final String ZHIPU_PROVIDER = "智谱 GLM";
 
     static {
-        // 商汤 SenseNova
-        registerProvider("商汤 SenseNova", "https://platform.sensenova.cn  →  API Keys → 新建 API Key");
-        registerModel("deepseek-v4-flash", "DeepSeek V4 Flash", "商汤 SenseNova",
-                "https://token.sensenova.cn/v1/chat/completions", true);
-        registerModel("sensenova-6.8-flash-lite", "6.8 Flash-Lite", "商汤 SenseNova",
-                "https://token.sensenova.cn/v1/chat/completions", true);
-        registerModel("glm-5.2", "GLM-5.2", "商汤 SenseNova",
-                "https://token.sensenova.cn/v1/chat/completions", true);
-        registerModel("kimi-k3", "Kimi K3", "商汤 SenseNova",
-                "https://token.sensenova.cn/v1/chat/completions", true, 1.0);
-
-        // 智谱 GLM
-        registerProvider("智谱 GLM", "https://open.bigmodel.cn  →  API Keys → 新建 API Key");
-        registerModel("glm-4-flash", "GLM-4-Flash", "智谱 GLM",
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions", true);
-
-        // 自定义 OpenAI 兼容渠道：无预置模型，接口地址与模型 ID 由用户填写
-        registerProvider(CUSTOM_PROVIDER, "");
+        PRESETS.add(new Preset("商汤 · DeepSeek V4 Flash", SENSENOVA_URL, "deepseek-v4-flash",
+                DEFAULT_TEMPERATURE, true, SENSENOVA_REGISTER, SENSENOVA_PROVIDER));
+        PRESETS.add(new Preset("商汤 · 6.8 Flash-Lite", SENSENOVA_URL, "sensenova-6.8-flash-lite",
+                DEFAULT_TEMPERATURE, true, SENSENOVA_REGISTER, SENSENOVA_PROVIDER));
+        PRESETS.add(new Preset("商汤 · GLM-5.2", SENSENOVA_URL, "glm-5.2",
+                DEFAULT_TEMPERATURE, true, SENSENOVA_REGISTER, SENSENOVA_PROVIDER));
+        PRESETS.add(new Preset("商汤 · Kimi K3", SENSENOVA_URL, "kimi-k3",
+                1.0, true, SENSENOVA_REGISTER, SENSENOVA_PROVIDER));
+        PRESETS.add(new Preset("智谱 · GLM-4-Flash", ZHIPU_URL, "glm-4-flash",
+                DEFAULT_TEMPERATURE, false, ZHIPU_REGISTER, ZHIPU_PROVIDER));
+        // 空白模板：任意 OpenAI 兼容服务都由用户自己填写
+        PRESETS.add(new Preset("空白配置", "", "", DEFAULT_TEMPERATURE, false, "", ""));
     }
 
-    private static void registerProvider(String provider, String registerUrl) {
-        PROVIDER_INFO.put(provider, new ProviderInfo(provider, registerUrl));
-        PROVIDERS.add(provider);
-    }
-
-    private static void registerModel(String id, String displayName, String provider, String apiUrl, boolean free) {
-        registerModel(id, displayName, provider, apiUrl, free, DEFAULT_TEMPERATURE);
-    }
-
-    private static void registerModel(String id, String displayName, String provider, String apiUrl,
-                                      boolean free, double temperature) {
-        ModelInfo info = new ModelInfo(id, displayName, provider, apiUrl, free, temperature);
-        MODELS.put(id, info);
-        PROVIDER_MODELS.computeIfAbsent(provider, k -> new ArrayList<>()).add(info);
+    private static String newProfileId() {
+        return "p" + System.currentTimeMillis() + Integer.toHexString((int) (Math.random() * 0xFFFF));
     }
 
     // ── API Key 持久化 ──
@@ -180,7 +201,9 @@ public class AIService {
             PluginLog.error("[AIService] 读取 API Key 失败: " + e.getMessage(), e);
         }
         if (key.isEmpty()) {
-            key = migrateLegacyKey(provider);
+            // 新配置槽位：把旧版单份 Key 懒迁移过来，避免在 EDT 上同步访问钥匙串
+            key = provider.startsWith(KEY_SLOT_PREFIX)
+                    ? migrateProfileKey(provider) : migrateLegacyKey(provider);
         }
         KEY_CACHE.put(provider, key);
         return key;
@@ -205,27 +228,226 @@ public class AIService {
         return cached == null ? "" : cached;
     }
 
-    public static boolean isCustomModel(String modelId) {
-        return CUSTOM_MODEL_ID.equals(modelId);
+    // ── 多配置持久化 ──
+
+    private static final Gson PROFILE_GSON = new Gson();
+    private static final java.lang.reflect.Type PROFILE_LIST_TYPE =
+            new com.google.gson.reflect.TypeToken<List<AiProfile>>() {}.getType();
+    private static volatile List<AiProfile> PROFILE_CACHE = null;
+    private static volatile boolean MIGRATION_DONE = false;
+
+    /** 读取全部配置；首次访问时自动迁移旧版单份配置，并保证至少有一份 */
+    public static synchronized List<AiProfile> getProfiles() {
+        if (!MIGRATION_DONE) {
+            migrateLegacyProfiles();
+            MIGRATION_DONE = true;
+        }
+        if (PROFILE_CACHE == null) {
+            String json = PropertiesComponent.getInstance().getValue(PROFILES_KEY, "");
+            List<AiProfile> parsed = null;
+            try {
+                if (!json.isEmpty()) {
+                    parsed = PROFILE_GSON.fromJson(json, PROFILE_LIST_TYPE);
+                }
+            } catch (Exception e) {
+                PluginLog.error("[AIService] 读取 AI 配置失败: " + e.getMessage(), e);
+            }
+            if (parsed == null || parsed.isEmpty()) {
+                AiProfile blank = blankProfile();
+                parsed = new ArrayList<>();
+                parsed.add(blank);
+                writeProfiles(parsed, blank.id);
+            }
+            for (AiProfile p : parsed) {
+                if (p.id == null || p.id.isEmpty()) {
+                    p.id = newProfileId();
+                }
+            }
+            normalizeProfileNames(parsed);
+            PROFILE_CACHE = parsed;
+        }
+        return PROFILE_CACHE;
     }
 
-    public static boolean isCustomProvider(String provider) {
-        return CUSTOM_PROVIDER.equals(provider);
+    private static AiProfile blankProfile() {
+        AiProfile p = PRESETS.get(PRESETS.size() - 1).newProfile();
+        p.name = defaultProfileName("");
+        return p;
     }
 
-    /** 自定义渠道持久化的接口地址 / 模型 ID（应用级配置，多项目共享） */
-    public static String getCustomBaseUrl() {
-        return PropertiesComponent.getInstance().getValue(CUSTOM_BASEURL_KEY, "");
+    /** 配置默认名直接用模型 ID：新版已无「内置 / 自定义」渠道之分，不需要渠道前缀 */
+    public static String defaultProfileName(String modelId) {
+        return modelId == null || modelId.trim().isEmpty() ? "新配置" : modelId.trim();
     }
 
-    public static String getCustomModelName() {
-        return PropertiesComponent.getInstance().getValue(CUSTOM_MODEL_NAME_KEY, "");
-    }
-
-    public static void saveCustomConfig(String baseUrl, String modelName) {
+    /** 一次性清掉历史遗留的「自定义 · 」前缀（旧版渠道名 + 上一版默认命名生成）。
+     *  只匹配精确前缀，用户自己起的名字不受影响；清理后写回并打标记，不会反复执行。 */
+    private static void normalizeProfileNames(List<AiProfile> profiles) {
         PropertiesComponent pc = PropertiesComponent.getInstance();
-        pc.setValue(CUSTOM_BASEURL_KEY, baseUrl == null ? "" : baseUrl.trim());
-        pc.setValue(CUSTOM_MODEL_NAME_KEY, modelName == null ? "" : modelName.trim());
+        if ("true".equals(pc.getValue(NAME_PREFIX_CLEANED_KEY, "false"))) {
+            return;
+        }
+        final String prefix = "自定义 · ";
+        boolean changed = false;
+        for (AiProfile p : profiles) {
+            if (p.name != null && p.name.startsWith(prefix)) {
+                String rest = p.name.substring(prefix.length()).trim();
+                p.name = rest.isEmpty() ? defaultProfileName(p.model) : rest;
+                changed = true;
+            }
+        }
+        if (changed) {
+            pc.setValue(PROFILES_KEY, PROFILE_GSON.toJson(profiles, PROFILE_LIST_TYPE));
+            PluginLog.info("[AIService] 已清理配置名中遗留的「自定义 · 」前缀");
+        }
+        pc.setValue(NAME_PREFIX_CLEANED_KEY, "true");
+    }
+
+    /** 供设置面板编辑用的深拷贝，改动不会直接污染运行时缓存 */
+    public static List<AiProfile> copyProfiles() {
+        return PROFILE_GSON.fromJson(
+                PROFILE_GSON.toJson(getProfiles(), PROFILE_LIST_TYPE), PROFILE_LIST_TYPE);
+    }
+
+    /** 当前启用配置；active id 失效时退回第一份 */
+    public static AiProfile getActiveProfile() {
+        List<AiProfile> profiles = getProfiles();
+        String activeId = PropertiesComponent.getInstance().getValue(ACTIVE_PROFILE_KEY, "");
+        for (AiProfile p : profiles) {
+            if (p.id.equals(activeId)) {
+                return p;
+            }
+        }
+        return profiles.get(0);
+    }
+
+    public static String getActiveProfileId() {
+        return getActiveProfile().id;
+    }
+
+    public static AiProfile findProfile(String id) {
+        for (AiProfile p : getProfiles()) {
+            if (p.id.equals(id)) {
+                return p;
+            }
+        }
+        return getActiveProfile();
+    }
+
+    /** 丢弃进程内缓存，下次读取强制从应用级配置重解析（设置页 Reset 用） */
+    public static void invalidateProfileCache() {
+        PROFILE_CACHE = null;
+    }
+
+    /** 保存配置列表与当前启用项；keys 为 keySlot → API Key，逐份写入 PasswordSafe */
+    public static synchronized void saveProfiles(List<AiProfile> profiles, String activeId,
+                                                  Map<String, String> keys) {
+        List<AiProfile> copy = new ArrayList<>();
+        if (profiles != null) {
+            for (AiProfile p : profiles) {
+                if (p == null) continue;
+                // 逐字段拷贝：运行时缓存不能和设置面板持有同一批对象，
+                // 否则设置页 Apply 后继续编辑表单会直接改动正在使用的配置
+                AiProfile c = new AiProfile();
+                c.id = p.id == null || p.id.isEmpty() ? newProfileId() : p.id;
+                c.name = p.name == null ? "" : p.name;
+                c.baseUrl = p.baseUrl == null ? "" : p.baseUrl;
+                c.model = p.model == null ? "" : p.model;
+                c.registerUrl = p.registerUrl == null ? "" : p.registerUrl;
+                c.legacyKeySlot = p.legacyKeySlot == null ? "" : p.legacyKeySlot;
+                c.temperature = p.temperature > 0 ? p.temperature : DEFAULT_TEMPERATURE;
+                c.reasoningEffortNone = p.reasoningEffortNone;
+                copy.add(c);
+            }
+        }
+        if (copy.isEmpty()) {
+            copy.add(blankProfile());
+        }
+        String chosen = activeId;
+        boolean found = false;
+        for (AiProfile p : copy) {
+            if (p.id.equals(chosen)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            chosen = copy.get(0).id;
+        }
+        if (keys != null) {
+            for (Map.Entry<String, String> entry : keys.entrySet()) {
+                saveConfig(entry.getKey(), entry.getValue());
+            }
+        }
+        writeProfiles(copy, chosen);
+        PROFILE_CACHE = copy;
+        MIGRATION_DONE = true;
+    }
+
+    private static void writeProfiles(List<AiProfile> profiles, String activeId) {
+        PropertiesComponent pc = PropertiesComponent.getInstance();
+        pc.setValue(PROFILES_KEY, PROFILE_GSON.toJson(profiles, PROFILE_LIST_TYPE));
+        pc.setValue(ACTIVE_PROFILE_KEY, activeId);
+    }
+
+    /** 旧版：单份自定义渠道 + 一个内置模型 ID。首次读取时转成配置列表；
+     *  旧 Key 只记下原槽位，等真正读 Key 时再懒迁移，避免启动时同步访问钥匙串卡住 EDT。 */
+    private static void migrateLegacyProfiles() {
+        PropertiesComponent pc = PropertiesComponent.getInstance();
+        if (!pc.getValue(PROFILES_KEY, "").isEmpty()) {
+            return;
+        }
+        List<AiProfile> migrated = new ArrayList<>();
+        String activeId = "";
+        String legacyBase = pc.getValue(LEGACY_BASEURL_KEY, "");
+        String legacyModel = pc.getValue(LEGACY_MODEL_NAME_KEY, "");
+        String legacySelected = pc.getValue(LEGACY_MODEL_KEY, "");
+
+        if (!legacyModel.isEmpty()) {
+            AiProfile p = blankProfile();
+            p.name = defaultProfileName(legacyModel);
+            p.baseUrl = legacyBase;
+            p.model = legacyModel;
+            p.legacyKeySlot = CUSTOM_PROVIDER;
+            migrated.add(p);
+            if (CUSTOM_MODEL_ID.equals(legacySelected) || legacySelected.isEmpty()) {
+                activeId = p.id;
+            }
+        }
+        if (!legacySelected.isEmpty() && !CUSTOM_MODEL_ID.equals(legacySelected)) {
+            for (Preset preset : PRESETS) {
+                if (preset.model.equals(legacySelected)) {
+                    AiProfile p = preset.newProfile();
+                    p.legacyKeySlot = preset.legacyProvider;
+                    migrated.add(p);
+                    activeId = p.id;
+                    break;
+                }
+            }
+        }
+        if (migrated.isEmpty()) {
+            AiProfile p = blankProfile();
+            migrated.add(p);
+            activeId = p.id;
+        }
+        writeProfiles(migrated, activeId);
+        PROFILE_CACHE = migrated;
+        PluginLog.info("[AIService] 旧版 AI 配置已迁移为 " + migrated.size() + " 份独立配置");
+    }
+
+    /** 配置槽位读不到 Key 时，从旧版厂商槽位懒迁移（发生在后台的 loadApiKeyAsync 里） */
+    private static String migrateProfileKey(String slot) {
+        for (AiProfile p : getProfiles()) {
+            if (!slot.equals(p.keySlot()) || p.legacyKeySlot == null || p.legacyKeySlot.isEmpty()) {
+                continue;
+            }
+            String old = loadApiKey(p.legacyKeySlot);
+            if (!old.isEmpty()) {
+                saveConfig(slot, old);
+            }
+            return old;
+        }
+        return "";
     }
 
     /** 规范化用户输入的 BaseURL：去尾斜杠；未带 /chat/completions 时自动补全 */
@@ -309,6 +531,8 @@ public class AIService {
     private final String apiKey;
     private final String modelId;
     private final String apiUrl;
+    private final double temperature;
+    private final boolean reasoningEffortNone;
     private final Gson gson = new Gson();
 
     /** 共享静态线程池（daemon 线程，固定 4 线程，生命周期 = 插件生命周期） */
@@ -318,23 +542,58 @@ public class AIService {
         return t;
     });
 
-    public AIService(String apiKey, String modelId) {
-        this(apiKey, modelId, null);
+    /** 中止当前流式请求；createAiService 每次新建实例，不会跨请求残留 */
+    private volatile boolean cancelled = false;
+
+    public void cancel() {
+        cancelled = true;
     }
 
-    /** customBaseUrl 非空时走自定义 OpenAI 兼容端点（此时 modelId 应为 CUSTOM_MODEL_ID） */
-    public AIService(String apiKey, String modelId, String customBaseUrl) {
-        this.apiKey = apiKey;
-        if (customBaseUrl != null && !customBaseUrl.trim().isEmpty()) {
-            // 请求体里的 model 必须用用户填写的真实模型 ID，"custom" 只是本地选中状态的哨兵值
-            this.modelId = CUSTOM_MODEL_ID.equals(modelId) ? getCustomModelName() : modelId;
-            this.apiUrl = normalizeBaseUrl(customBaseUrl);
-        } else {
-            this.modelId = modelId;
-            ModelInfo info = MODELS.get(modelId);
-            this.apiUrl = info != null ? info.apiUrl : MODELS.values().iterator().next().apiUrl;
-        }
+    /** 按配置构造：地址、模型 ID、采样参数全部来自该配置，与厂商注册表彻底解耦 */
+    public AIService(String apiKey, AiProfile profile) {
+        AiProfile p = profile != null ? profile : new AiProfile();
+        this.apiKey = apiKey == null ? "" : apiKey;
+        this.modelId = p.model == null ? "" : p.model;
+        this.apiUrl = normalizeBaseUrl(p.baseUrl);
+        this.temperature = p.temperature > 0 ? p.temperature : DEFAULT_TEMPERATURE;
+        this.reasoningEffortNone = p.reasoningEffortNone;
     }
+
+    /** 兼容旧调用：modelId 命中预设时按其地址与参数构造 */
+    public AIService(String apiKey, String modelId) {
+        this(apiKey, legacyProfile(modelId, null));
+    }
+
+    /** 兼容旧调用：显式指定 OpenAI 兼容地址 */
+    public AIService(String apiKey, String modelId, String customBaseUrl) {
+        this(apiKey, legacyProfile(
+                CUSTOM_MODEL_ID.equals(modelId)
+                        ? PropertiesComponent.getInstance().getValue(LEGACY_MODEL_NAME_KEY, "")
+                        : modelId,
+                customBaseUrl));
+    }
+
+    private static AiProfile legacyProfile(String modelId, String baseUrl) {
+        AiProfile p = new AiProfile();
+        p.model = modelId == null ? "" : modelId;
+        if (baseUrl != null && !baseUrl.trim().isEmpty()) {
+            p.baseUrl = baseUrl;
+            return p;
+        }
+        for (Preset preset : PRESETS) {
+            if (preset.model.equals(modelId)) {
+                p.baseUrl = preset.baseUrl;
+                p.temperature = preset.temperature;
+                p.reasoningEffortNone = preset.reasoningEffortNone;
+                break;
+            }
+        }
+        return p;
+    }
+
+    /** 生成超时统一提示：HTTP 读取超时与外层兜底共用，避免误导成 Key 或网络问题 */
+    public static final String TIMEOUT_HINT =
+            "AI 分析超时：模型生成过慢，可减少自选股数量、更换更快的模型后重试";
 
     /** 分析自选股的系统提示词 */
     public static final String ANALYSIS_SYSTEM_PROMPT =
@@ -360,6 +619,7 @@ public class AIService {
                     "【操作】给出明确建议（高抛/低吸/持有/观望/区间操作）和具体目标位、止损位\n" +
                     "【风险】仅在该股有特殊风险点时输出一行，无则省略\n" +
                     "最后给出组合整体评估，不超过5行：仓位建议、市场情绪、当前是否适合左侧布局。\n" +
+                    "【输出纪律·必须遵守】禁止输出任何思考过程、分析计划、对题目要求的复述或自我说明；回答的第一个字符必须是「【」，格式之外不得写前言、过程说明或重复内容，不要为了凑长度展开。\n" +
                     "语言专业、数据驱动、直接给结论。注意：以下为分析参考，不构成投资建议。";
 
     /** 快讯解读系统提示词：定性结论 + 关联自选 + 后续跟踪点（自选清单运行时追加在本提示末尾，不进入用户气泡） */
@@ -371,6 +631,77 @@ public class AIService {
             "2. 【关联自选】对照自选股清单，按行业、产业链或主题判断哪些品种与该消息相关，逐只说明关联逻辑与潜在影响方向，引用品种时写名称即可；确无关联则写「与当前自选无直接关联」。清单为空则省略此节。\n" +
             "3. 【跟踪点】1-2 条后续需要盯住的信号（数据落地时间、政策细则、业绩窗口等）。\n" +
             "要求：只基于快讯内容与给定清单作答，不得编造未提供的数字或背景；语气克制，避免夸大单一事件的影响；解读仅为资讯参考，不构成投资建议。";
+
+    /** 最近要闻速览系统提示词：只汇总当前这批快讯，明确不代表全天 */
+    public static final String NEWS_SUMMARY_PROMPT =
+            "你是一个专业财经编辑，擅长把 7x24 快讯流压缩成高信息密度的要闻速览。\n" +
+            "「最近快讯清单」附在本提示末尾，是你唯一可依据的数据。\n" +
+            "重要：清单仅覆盖最近一批快讯，不代表全天，也不代表全部市场信息，不得暗示信息完整。\n" +
+            "【语言·必须遵守】全部使用简体中文。禁止英文小标题、英文分类名、中英混排的标题；" +
+            "公司名、股票代码、指数名等专有名词可保留原文。\n" +
+            "【格式·必须遵守】严格按以下三段输出，段落名必须原样保留，不得自行改成主题编号、不得增删段落：\n" +
+            "【一句话综述】\n" +
+            "一句话概括这批快讯的主线。\n" +
+            "【要点】\n" +
+            "3-5 条最重要的事，每条单独一行并以「- 」开头，1-2 句，先给结论再点明主题或板块；同主题快讯合并成一条，不要逐条复述。\n" +
+            "【值得留意】\n" +
+            "1-2 条后续值得跟踪的信号或待落地信息，每条单独一行并以「- 」开头；没有则写「暂无」。\n" +
+            "格式示例（只示意段落名与语言，内容必须来自清单、不得照抄）：\n" +
+            "【一句话综述】\n" +
+            "政策与资金面消息交织，科技板块相对活跃。\n" +
+            "【要点】\n" +
+            "- 多家公司披露中标与回购，电网设备链条关注度上升。\n" +
+            "【值得留意】\n" +
+            "- 后续需跟踪相关政策的落地节奏。\n" +
+            "【其他要求】只基于清单作答，不得编造未出现的数字、政策、公司或事件；按重要性而非时间顺序排列；" +
+            "纯文本，不用 markdown、不用 # 号或 **；语气克制，避免夸大单一事件影响；速览仅为资讯参考，不构成投资建议。\n" +
+            "【输出纪律·必须遵守】禁止输出思考过程、分析计划、对题目要求的复述或自我说明；" +
+            "回答的第一个字符必须是「【」，即直接从「【一句话综述】」开始；三段之外不得写前言、过程说明或重复内容。";
+
+    /** 速览单次最多取 30 条、每条摘要截断 60 字，避免免费模型上下文过长 */
+    private static final int SUMMARY_MAX_ITEMS = 30;
+    private static final int SUMMARY_DIGEST_LIMIT = 60;
+
+    /** 把最新一批快讯压成注入 system prompt 的清单（纯函数，无 UI 依赖，便于单测）。
+     *  接口返回已是最新在前，按传入顺序取前 N 条；按 id 去重，标题与摘要重复时只保留标题。 */
+    public static String buildSummaryContext(List<KuaixunItem> items) {
+        if (items == null || items.isEmpty()) {
+            return "";
+        }
+        LinkedHashSet<String> seenIds = new LinkedHashSet<>();
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\n最近快讯清单（本次获取 ").append(items.size())
+                .append(" 条，以下最多 ").append(SUMMARY_MAX_ITEMS)
+                .append(" 条；仅代表最近一批，不代表全天）：\n");
+        int added = 0;
+        for (KuaixunItem item : items) {
+            if (item == null || added >= SUMMARY_MAX_ITEMS) {
+                continue;
+            }
+            String id = item.getId();
+            if (id != null && !id.isEmpty() && !seenIds.add(id)) {
+                continue;
+            }
+            String title = item.getTitle() == null ? "" : item.getTitle().trim();
+            String digest = item.getContentText() == null ? "" : item.getContentText().trim();
+            if (title.isEmpty() && digest.isEmpty()) {
+                continue;
+            }
+            if (digest.equals(title)) {
+                digest = "";
+            }
+            if (digest.length() > SUMMARY_DIGEST_LIMIT) {
+                digest = digest.substring(0, SUMMARY_DIGEST_LIMIT) + "…";
+            }
+            sb.append("- ").append(item.getDisplayTimeText()).append(" ").append(title);
+            if (!digest.isEmpty()) {
+                sb.append("：").append(digest);
+            }
+            sb.append("\n");
+            added++;
+        }
+        return added == 0 ? "" : sb.toString();
+    }
 
     /** 构建自选股行情上下文（供 UI 展示与调用分析共用） */
     public static String buildMarketContext(List<QuoteItem> items, String marketName) {
@@ -614,6 +945,13 @@ public class AIService {
 
     /** 异步分析自选股行情 */
     public CompletableFuture<String> analyzeWatchlistAsync(List<QuoteItem> items, String marketName) {
+        return analyzeWatchlistAsync(items, marketName, null);
+    }
+
+    /** 带流式回调的分析；onChunk 为 null 时走原来的整包响应 */
+    public CompletableFuture<String> analyzeWatchlistAsync(
+            List<QuoteItem> items, String marketName,
+            java.util.function.Consumer<String> onChunk) {
         PluginLog.info("[AIService] analyzeWatchlistAsync START, items=" +
             (items != null ? items.size() : 0) + ", market=" + marketName + ", model=" + modelId);
         return CompletableFuture.supplyAsync(() -> {
@@ -632,8 +970,11 @@ public class AIService {
             }
             String context = buildMarketContext(items, marketName, maMap);
             PluginLog.info("[AIService] analyzeWatchlistAsync calling callModel, context_len=" + context.length());
-            String result = callModel(ANALYSIS_SYSTEM_PROMPT,
-                "请分析以下自选股行情，逐只给出点评和操作建议：\n\n" + context);
+            JsonArray messages = new JsonArray();
+            messages.add(buildMessage("system", ANALYSIS_SYSTEM_PROMPT));
+            messages.add(buildMessage("user",
+                "请分析以下自选股行情，逐只给出点评和操作建议：\n\n" + context));
+            String result = callModel(messages, onChunk);
             result = enforceConsistency(result, items);
             PluginLog.info("[AIService] analyzeWatchlistAsync DONE, result_len=" +
                 (result != null ? result.length() : 0) + ", preview=" +
@@ -646,6 +987,12 @@ public class AIService {
      *  跨轮一致性：自动从最近一条含品种操作结论的 assistant 消息提取「上一轮结论基线」注入 system prompt，
      *  约束本轮结论不得无依据推翻基线，推翻时必须说明数据/信号变化原因。 */
     public CompletableFuture<String> chatAsync(String systemPrompt, List<String> history) {
+        return chatAsync(systemPrompt, history, null);
+    }
+
+    /** 带流式回调的聊天；onChunk 为 null 时走原来的整包响应 */
+    public CompletableFuture<String> chatAsync(String systemPrompt, List<String> history,
+                                                java.util.function.Consumer<String> onChunk) {
         // 在调用线程做 snapshot，避免后续修改导致 ConcurrentModificationException
         final List<String> snapshot = new ArrayList<>(history);
         final String sys = appendBaseline(systemPrompt, snapshot);
@@ -656,7 +1003,7 @@ public class AIService {
                 String role = (i % 2 == 0) ? "user" : "assistant";
                 messages.add(buildMessage(role, snapshot.get(i)));
             }
-            return callModel(messages);
+            return callModel(messages, onChunk);
         }, SHARED_EXECUTOR);
     }
 
@@ -757,68 +1104,87 @@ public class AIService {
         return msg;
     }
 
-    private String callModel(String systemPrompt, String userPrompt) {
-        JsonArray messages = new JsonArray();
-        messages.add(buildMessage("system", systemPrompt));
-        messages.add(buildMessage("user", userPrompt));
-        return callModel(messages);
+    private String callModel(JsonArray messages) {
+        return callModel(messages, null);
     }
 
-    private String callModel(JsonArray messages) {
+    private String callModel(JsonArray messages, java.util.function.Consumer<String> onChunk) {
         try {
             PluginLog.info("[AIService] callModel start, model=" + modelId + ", apiUrl=" + apiUrl + ", key_len=" + (apiKey != null ? apiKey.length() : 0));
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("model", modelId);
             requestBody.add("messages", messages);
             requestBody.addProperty("max_tokens", 4000);
+            final boolean streaming = onChunk != null;
+            if (streaming) {
+                requestBody.addProperty("stream", true);
+            }
 
-            ModelInfo info = MODELS.get(modelId);
-            // 采样温度按模型注册值下发（kimi-k3 仅接受 1），未注册模型走默认值
-            requestBody.addProperty("temperature",
-                    info != null ? info.temperature : DEFAULT_TEMPERATURE);
-
-            // reasoning_effort 仅商汤 SenseNova 支持，其他厂商不传避免报错
-            if (info != null && "商汤 SenseNova".equals(info.provider)) {
+            // 采样参数来自当前配置（如 kimi-k3 仅接受 1），不再依赖内置模型注册表
+            requestBody.addProperty("temperature", temperature);
+            // reasoning_effort 仅商汤 SenseNova 支持，其他平台不传避免报错
+            if (reasoningEffortNone) {
                 requestBody.addProperty("reasoning_effort", "none");
             }
 
             String jsonRequest = gson.toJson(requestBody);
             PluginLog.info("[AIService] callModel calling callAPI, request_len=" + jsonRequest.length());
-            String response = callAPI(jsonRequest);
+            String response = callAPI(jsonRequest, streaming, onChunk);
             PluginLog.info("[AIService] callModel got response, len=" +
                 (response != null ? response.length() : 0) + ", preview=" +
                 (response != null ? response.substring(0, Math.min(200, response.length())) : "null"));
-            String extracted = extractResponseText(response);
+            // 所有入口统一剥离推理模型写在正文开头的思考前言
+            String extracted = stripPreamble(extractResponseText(response));
             PluginLog.info("[AIService] callModel extracted, len=" +
                 (extracted != null ? extracted.length() : 0));
             return extracted;
         } catch (Exception e) {
             PluginLog.error("[AIService] callModel EXCEPTION: " + e.getClass().getName() + " - " + e.getMessage(), e);
+            // 读取/连接超时由 HTTP 层负责，给可操作提示；外层不再叠加同长的全局超时
+            if (e instanceof java.net.SocketTimeoutException) {
+                return TIMEOUT_HINT;
+            }
             return "AI分析失败: " + e.getMessage();
         }
     }
 
-    private String callAPI(String jsonRequest) throws Exception {
-        PluginLog.info("[AIService] callAPI connecting to " + apiUrl);
+    private String callAPI(String jsonRequest, boolean streaming,
+                           java.util.function.Consumer<String> onChunk) throws Exception {
+        if (apiUrl == null || apiUrl.isEmpty()) {
+            throw new IllegalStateException("未配置接口地址，请在 AI 设置里填写 OpenAI 兼容地址（填到 /v1 即可）");
+        }
+        PluginLog.info("[AIService] callAPI connecting to " + apiUrl + ", stream=" + streaming);
         RuntimeException last429 = null;
+        String request = jsonRequest;
+        boolean useStream = streaming;
         for (int attempt = 0; attempt < 4; attempt++) {
             URL url = URI.create(apiUrl).toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            if (useStream) {
+                conn.setRequestProperty("Accept", "text/event-stream");
+            }
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(60000);
             conn.setDoOutput(true);
 
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(jsonRequest.getBytes(StandardCharsets.UTF_8));
+                os.write(request.getBytes(StandardCharsets.UTF_8));
             }
 
             int code = conn.getResponseCode();
             PluginLog.info("[AIService] callAPI response code=" + code);
             if (code < 200 || code >= 300) {
                 String errorBody = readStream(conn.getErrorStream());
+                // 部分厂商直接拒绝 stream 参数：去掉后按整包响应重试一次
+                if (useStream && code >= 400 && code < 500 && code != 401 && code != 429) {
+                    PluginLog.info("[AIService] stream rejected (HTTP " + code + "), fallback to non-stream");
+                    useStream = false;
+                    request = disableStream(request);
+                    continue;
+                }
                 if (code == 401) {
                     throw new RuntimeException("API Key 无效或已过期（HTTP 401）");
                 } else if (code == 429) {
@@ -837,9 +1203,143 @@ public class AIService {
                 }
             }
 
+            String contentType = conn.getContentType();
+            if (useStream && contentType != null
+                    && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/event-stream")) {
+                return readStreamingResponse(conn, onChunk);
+            }
+            // 厂商返回整包 JSON：自动降级，原有解析链路不变
             return readStream(conn.getInputStream());
         }
         throw last429 != null ? last429 : new RuntimeException("API 请求失败");
+    }
+
+    /** 逐行读 SSE，把 delta 累积成完整文本；合成与整包响应一致的 JSON 以复用 extractResponseText */
+    private String readStreamingResponse(HttpURLConnection conn,
+                                         java.util.function.Consumer<String> onChunk) throws Exception {
+        StringBuilder accumulated = new StringBuilder();
+        // 推理模型常把思考过程写进正文：先缓冲到正文锚点，避免前言流式刷屏。
+        // accumulated 仍保留全文，最终文本由 stripPreamble / 后处理统一清洗
+        StringBuilder pending = new StringBuilder();
+        boolean[] visibleStarted = {false};
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while (!cancelled && (line = reader.readLine()) != null) {
+                if (!line.startsWith("data:")) {
+                    continue;
+                }
+                String data = line.substring(5).trim();
+                if ("[DONE]".equals(data)) {
+                    break;
+                }
+                if (data.isEmpty()) {
+                    continue;
+                }
+                String chunk = parseDeltaContent(data);
+                if (chunk.isEmpty()) {
+                    continue;
+                }
+                accumulated.append(chunk);
+                if (!visibleStarted[0]) {
+                    pending.append(chunk);
+                    int start = indexOfContentStart(pending);
+                    if (start >= 0) {
+                        visibleStarted[0] = true;
+                        if (onChunk != null) {
+                            onChunk.accept(pending.substring(start));
+                        }
+                    } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null) {
+                        // 模型完全不按格式输出时不能一直憋着不显示
+                        visibleStarted[0] = true;
+                        onChunk.accept(pending.toString());
+                    }
+                } else if (onChunk != null) {
+                    onChunk.accept(chunk);
+                }
+            }
+        } catch (java.net.SocketTimeoutException e) {
+            // 流式已吐出的内容必须保留，不能被整句超时提示替换掉
+            PluginLog.info("[AIService] stream read timeout, kept partial_len=" + accumulated.length());
+            accumulated.append("\n\n").append(TIMEOUT_HINT);
+        } catch (java.io.IOException e) {
+            PluginLog.error("[AIService] stream read failed: " + e.getMessage(), e);
+            accumulated.append("\n\n（生成中断，以上为已生成内容）");
+        } finally {
+            conn.disconnect();
+        }
+        if (!visibleStarted[0] && pending.length() > 0 && onChunk != null) {
+            onChunk.accept(pending.toString());
+        }
+        if (cancelled) {
+            accumulated.append("\n\n（已停止生成，以上为已生成内容）");
+        }
+        JsonObject message = new JsonObject();
+        message.addProperty("content", accumulated.toString());
+        JsonObject choice = new JsonObject();
+        choice.add("message", message);
+        JsonArray choices = new JsonArray();
+        choices.add(choice);
+        JsonObject fake = new JsonObject();
+        fake.add("choices", choices);
+        return gson.toJson(fake);
+    }
+
+    /** 前言过滤的兜底字符数：超过仍未找到正文锚点就直接显示，避免干等 */
+    private static final int PREAMBLE_FALLBACK_LIMIT = 200;
+
+    /** 找正文起点：优先真实段落名，其次行首【名称】块，最后才退回行首编号。
+     *  不能用「首个【」——模型思考过程里常引用「第一个字符必须是「【」」，会误命中放行整段思考；
+     *  也不能优先认行首「1.」——思考过程里的主题编号同样会误命中（如 "Major themes:\n1. ..."）。 */
+    static int indexOfContentStart(CharSequence text) {
+        String s = text.toString();
+        int summary = s.indexOf("【一句话综述】");
+        if (summary >= 0) {
+            return summary;
+        }
+        java.util.regex.Matcher block = java.util.regex.Pattern
+                .compile("(?m)^\\s*【[^】\\n]{1,40}】").matcher(s);
+        if (block.find()) {
+            return block.start();
+        }
+        java.util.regex.Matcher numbered = java.util.regex.Pattern
+                .compile("(?m)^\\s*1[.、．]").matcher(s);
+        return numbered.find() ? numbered.start() : -1;
+    }
+
+    /** 从一条 SSE data 提取增量文本；纯静态方法，便于单测 */
+    static String parseDeltaContent(String data) {
+        try {
+            JsonObject obj = JsonParser.parseString(data).getAsJsonObject();
+            JsonArray choices = obj.getAsJsonArray("choices");
+            if (choices == null || choices.size() == 0) {
+                return "";
+            }
+            JsonObject delta = choices.get(0).getAsJsonObject().getAsJsonObject("delta");
+            if (delta == null) {
+                return "";
+            }
+            if (delta.has("content") && !delta.get("content").isJsonNull()) {
+                return delta.get("content").getAsString();
+            }
+            if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
+                return delta.get("reasoning_content").getAsString();
+            }
+        } catch (Exception ignored) {
+            // 单行解析失败不影响后续块
+        }
+        return "";
+    }
+
+    /** 从请求体移除 stream 字段，用于厂商拒绝流式时的自动回退 */
+    private String disableStream(String request) {
+        try {
+            JsonObject obj = JsonParser.parseString(request).getAsJsonObject();
+            obj.remove("stream");
+            return gson.toJson(obj);
+        } catch (Exception e) {
+            return request;
+        }
     }
 
     private String readStream(java.io.InputStream is) throws Exception {
@@ -895,6 +1395,20 @@ public class AIService {
         }
         PluginLog.info("[AIService] 无法识别的响应结构，len=" + (response != null ? response.length() : 0));
         return "AI 返回解析失败：响应格式无法识别，请重试或更换模型（详情见日志）";
+    }
+
+    /** 丢弃推理模型写在正文开头的思考/复述前言，锚点与流式首帧过滤保持一致。
+     *  找不到正文起点或截断后过短时原样返回，避免误伤正常回答。纯静态方法，便于单测。 */
+    static String stripPreamble(String text) {
+        if (text == null) {
+            return "";
+        }
+        int start = indexOfContentStart(text);
+        if (start <= 0) {
+            return text;
+        }
+        String rest = text.substring(start);
+        return rest.length() >= 20 ? rest : text;
     }
 
     /** 去除 markdown 格式符号 */

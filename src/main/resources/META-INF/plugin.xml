@@ -1,12 +1,12 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.3.0</version>
+    <version>2.4.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, one-click AI news interpretation, and AI portfolio analysis with multi-turn chat.
         <br/><br/>
-        在 IDEA 中查看公开财经快讯、自选行情并进行 AI 分析。支持 A股、港股、美股、国际金价自选行情，多数据源兜底，各市场按开市时段自动刷新；AI 支持快讯解读与自选股分析、多轮追问，模型可选商汤 SenseNova、智谱 GLM，也支持自定义任意 OpenAI 兼容接口。
+        在 IDEA 中查看公开财经快讯、自选行情并进行 AI 分析。支持 A股、港股、美股、国际金价自选行情，多数据源兜底，各市场按开市时段自动刷新；AI 支持快讯解读、AI速览与自选股分析、多轮追问。可保存多份 AI 服务配置（任意 OpenAI 兼容接口，内置常用服务预设模板），随时切换，每份 API Key 独立加密保存在本机凭据存储。
         <br/><br/>
         本插件为非官方插件，与相关数据服务商及其关联公司无隶属、授权、认可或赞助关系。
         插件仅用于便捷查看公开财经资讯，不提供投资建议，行情数据可能存在延迟、遗漏或错误。
@@ -15,13 +15,17 @@
     <depends>com.intellij.modules.platform</depends>
 
     <change-notes><![CDATA[
+        <b>2.4.0</b>
         <ul>
-            <li>新增：支持自定义 OpenAI 兼容渠道——填入接口地址（BaseURL 自动规范化并补全 /chat/completions）、模型 ID 与 API Key，即可接入任意兼容端点</li>
-            <li>新增：快讯卡片右上角「AI 解读」——一句话定性利多/利空/中性并指向板块，对照自选股逐只说明关联逻辑与影响方向，给出后续跟踪点；结果在 AI 对话框中可继续追问</li>
-            <li>新增：AI 设置接入 IDE 设置页（Settings → Tools → Finance 7x24 News AI），与设置对话框共用同一份配置，两处入口一致</li>
-            <li>优化：工具窗口标题栏常驻「AI 设置」快捷入口，移除自选页冗余设置按钮</li>
-            <li>优化：AI 设置对话框首次打开居中、位置会话内记忆、已打开置前防重复、高度按内容自适应，厂商切换不再跳动</li>
-            <li>安全：自定义渠道的 API Key 同样仅保存在本机凭据存储（macOS 钥匙串 / Windows 凭据管理器 / KeePass）</li>
+            <li>新增：AI 服务改为多配置管理——可保存多份独立配置（名称 / 接口地址 / 模型 ID / API Key），下拉切换当前使用的服务；每份 Key 按配置单独保存在本机凭据存储，互不覆盖</li>
+            <li>新增：内置商汤 / 智谱渠道降级为「预设模板」，新建配置时可一键填充常用服务参数，也可从空白配置接入任意 OpenAI 兼容接口；旧版单份配置与 Key 自动迁移</li>
+            <li>新增：工具窗口标题栏常驻「AI速览」「AI选股分析」「AI 设置」三个快捷入口，快讯 / 自选任意页签下都能一键直达</li>
+            <li>新增：「AI速览」汇总最近一批快讯要点，按三段中文结构输出，可在对话框中继续追问；首发指令不再显示为用户气泡</li>
+            <li>优化：AI 设置面板改为配置列表 + 新建 / 删除 / 编辑，测试连接期间显示耗时进度与结果摘要</li>
+            <li>优化：AI 对话框 Esc 收起会话、再点入口原样恢复（含正在生成的回答）；标题栏关闭按钮仍可彻底关闭以重开一轮</li>
+            <li>优化：生成期间右下角「发送」按钮临时变为「停止」，移除独立停止按钮；追问链路不再并发</li>
+            <li>优化：强化速览的简体中文三段输出约束与流式前言过滤，修复正文锚点误命中模型思考过程的问题</li>
+            <li>优化：聊天气泡配色、字体与留白收紧，长回答高度计算更贴合实际行数</li>
         </ul>
     ]]></change-notes>
 

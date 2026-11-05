@@ -24,7 +24,10 @@ public class KuaixunToolWindowFactory implements ToolWindowFactory, DumbAware {
         Content content = ContentFactory.getInstance().createContent(panel, "", false);
         toolWindow.getContentManager().addContent(content);
 
-        // 标题栏常驻「AI 设置」齿轮：快讯/自选任意页签下都能一键打开
-        toolWindow.setTitleActions(java.util.List.of(new ShowAiSettingsAction()));
+        // 标题栏常驻 AI 入口：速览 / 选股分析 / 设置，快讯与自选页签下都能一键直达
+        toolWindow.setTitleActions(java.util.List.of(
+                new AiQuickActions.Summary(),
+                new AiQuickActions.StockAnalysis(),
+                new ShowAiSettingsAction()));
     }
 }
