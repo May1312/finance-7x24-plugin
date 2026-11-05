@@ -817,8 +817,22 @@ public class WatchlistPanel extends JPanel {
                     java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
                     JDialog dialog = openAiDialog(AI_DIALOG_SUMMARY, "AI速览", systemPrompt, history);
                     JComponent loading = (JComponent) dialog.getRootPane().getClientProperty("loadingPanel");
-                    if (loading != null) {
-                        loading.setVisible(false);
+                    JLabel loadingLabel = (JLabel) dialog.getRootPane().getClientProperty("loadingLabel");
+                    if (loading != null && loadingLabel != null) {
+                        // 与自选分析一致的等待计时：请求结束后 loadingPanel 被隐藏，下一次 tick 自停
+                        final int newsCount = items.size();
+                        final long startAt = System.currentTimeMillis();
+                        final Timer waitTimer = new Timer(1000, ev -> {
+                            if (!loading.isVisible()) {
+                                ((Timer) ev.getSource()).stop();
+                                return;
+                            }
+                            long sec = (System.currentTimeMillis() - startAt) / 1000;
+                            loadingLabel.setText("正在汇总 " + newsCount + " 条快讯... 已等待 " + sec + " 秒");
+                        });
+                        loadingLabel.setText("正在汇总 " + newsCount + " 条快讯...");
+                        loading.setVisible(true);
+                        waitTimer.start();
                     }
                     // 指令只发给模型，不展示成用户气泡（与自选分析一致）
                     Object send = dialog.getRootPane().getClientProperty("sendMessageSilent");
@@ -1158,6 +1172,7 @@ public class WatchlistPanel extends JPanel {
                     svc.chatAsync(systemPrompt, history, onChunk).thenAccept(result -> {
                         SwingUtilities.invokeLater(() -> {
                             thinkingPanel.setVisible(false);
+                            loadingPanel.setVisible(false);
                             setRequesting.accept(false);
                             history.add(result);
                             showAiResult.accept(result);
@@ -1165,6 +1180,7 @@ public class WatchlistPanel extends JPanel {
                     }).exceptionally(e -> {
                         SwingUtilities.invokeLater(() -> {
                             thinkingPanel.setVisible(false);
+                            loadingPanel.setVisible(false);
                             setRequesting.accept(false);
                             // 失败也要补一条 assistant 占位，否则 history 的「偶数 user / 奇数 assistant」
                             // 交替被打破，后续轮次会把用户提问误当作上一轮结论基线
@@ -1176,6 +1192,7 @@ public class WatchlistPanel extends JPanel {
                 } catch (Exception e) {
                     SwingUtilities.invokeLater(() -> {
                         thinkingPanel.setVisible(false);
+                        loadingPanel.setVisible(false);
                         setRequesting.accept(false);
                         history.add(AI_FAILED_PLACEHOLDER);
                         showAiResult.accept("服务初始化失败: " + e.getMessage());
