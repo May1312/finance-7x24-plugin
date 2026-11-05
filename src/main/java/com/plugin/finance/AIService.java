@@ -1221,6 +1221,8 @@ public class AIService {
         // 推理模型常把思考过程写进正文：先缓冲到正文锚点，避免前言流式刷屏。
         // accumulated 仍保留全文，最终文本由 stripPreamble / 后处理统一清洗
         StringBuilder pending = new StringBuilder();
+        // 放行后按行缓冲，便于整行判断并丢弃中途插入的推理元话术
+        StringBuilder lineBuffer = new StringBuilder();
         boolean[] visibleStarted = {false};
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
@@ -1249,13 +1251,25 @@ public class AIService {
                         if (onChunk != null) {
                             onChunk.accept(pending.substring(start));
                         }
-                    } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null) {
-                        // 模型完全不按格式输出时不能一直憋着不显示
+                    } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null
+                            && !isLikelyPreamble(pending)) {
+                        // 正常但不带锚点的回答（如自由追问）不能一直憋着；
+                        // 明显的推理自述则继续压住，等真正的正文锚点出现
                         visibleStarted[0] = true;
                         onChunk.accept(pending.toString());
                     }
                 } else if (onChunk != null) {
-                    onChunk.accept(chunk);
+                    // 放行之后仍按行挡一次：模型写到一半插入的英文自述、或「重新按格式写一遍」
+                    // 不能原样进气泡。按行缓冲是因为 SSE chunk 可能把一句话切成两半
+                    lineBuffer.append(chunk);
+                    int nl;
+                    while ((nl = lineBuffer.indexOf("\n")) >= 0) {
+                        String oneLine = lineBuffer.substring(0, nl + 1);
+                        lineBuffer.delete(0, nl + 1);
+                        if (!isLikelyPreamble(oneLine)) {
+                            onChunk.accept(oneLine);
+                        }
+                    }
                 }
             }
         } catch (java.net.SocketTimeoutException e) {
@@ -1266,9 +1280,14 @@ public class AIService {
             PluginLog.error("[AIService] stream read failed: " + e.getMessage(), e);
             accumulated.append("\n\n（生成中断，以上为已生成内容）");
         } finally {
+            // 流结束或异常时把不足一行的剩余文本补出去，同样不收推理自述
+            if (lineBuffer.length() > 0 && onChunk != null && !isLikelyPreamble(lineBuffer)) {
+                onChunk.accept(lineBuffer.toString());
+            }
             conn.disconnect();
         }
-        if (!visibleStarted[0] && pending.length() > 0 && onChunk != null) {
+        if (!visibleStarted[0] && pending.length() > 0 && onChunk != null
+                && !isLikelyPreamble(pending)) {
             onChunk.accept(pending.toString());
         }
         if (cancelled) {
@@ -1285,8 +1304,45 @@ public class AIService {
         return gson.toJson(fake);
     }
 
-    /** 前言过滤的兜底字符数：超过仍未找到正文锚点就直接显示，避免干等 */
+    /** 前言过滤的兜底字符数：超过仍未找到正文锚点、且不像推理自述时才直接显示，避免干等 */
     private static final int PREAMBLE_FALLBACK_LIMIT = 200;
+    /** 整段都是推理自述、没有任何正文锚点时的兜底提示 */
+    private static final String INVALID_CONTENT_HINT = "（本次未返回有效分析内容，请重试或更换模型）";
+
+    /** 判断一段文字是不是推理模型关于「怎么作答」的自述，而不是正文。
+     *  只用于流式首帧与中途行的显示过滤，不改动 accumulated / 最终文本。 */
+    static boolean isLikelyPreamble(CharSequence text) {
+        String s = text.toString();
+        if (s.length() < 8) {
+            return false;
+        }
+        String lower = s.toLowerCase(java.util.Locale.ROOT);
+        String[] markers = {
+                "we need answer", "first char", "first character", "format says",
+                "the user wants", "i need to", "let me ", "now let me", "maybe ",
+                "but maybe", "however user", "risk optional", "each stock",
+                "we can include", "need to be careful", "should we", "required format",
+                "我需要遵守", "输出纪律", "题目要求", "用户要求", "每只股票用",
+                "格式要求", "我需要按", "让我重新"
+        };
+        for (String marker : markers) {
+            if (lower.contains(marker)) {
+                return true;
+            }
+        }
+        // 插件要求全简体中文输出；整段以 ASCII 字母为主时按英文推理草稿处理
+        if (s.length() >= 100) {
+            int letters = 0;
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                    letters++;
+                }
+            }
+            return letters * 100 / s.length() > 75;
+        }
+        return false;
+    }
 
     /** 找正文起点：优先真实段落名，其次行首【名称】块，最后才退回行首编号。
      *  不能用「首个【」——模型思考过程里常引用「第一个字符必须是「【」」，会误命中放行整段思考；
@@ -1404,11 +1460,17 @@ public class AIService {
             return "";
         }
         int start = indexOfContentStart(text);
-        if (start <= 0) {
+        if (start == 0) {
             return text;
         }
-        String rest = text.substring(start);
-        return rest.length() >= 20 ? rest : text;
+        if (start > 0) {
+            String rest = text.substring(start);
+            if (rest.length() >= 20) {
+                return rest;
+            }
+        }
+        // 整段都没有正文锚点且明显是推理自述：不要原样回显给用户
+        return isLikelyPreamble(text) ? INVALID_CONTENT_HINT : text;
     }
 
     /** 去除 markdown 格式符号 */
