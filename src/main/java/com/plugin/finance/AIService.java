@@ -658,8 +658,9 @@ public class AIService {
             "【输出纪律·必须遵守】禁止输出思考过程、分析计划、对题目要求的复述或自我说明；" +
             "回答的第一个字符必须是「【」，即直接从「【一句话综述】」开始；三段之外不得写前言、过程说明或重复内容。";
 
-    /** 速览单次最多取 30 条、每条摘要截断 60 字，避免免费模型上下文过长 */
-    private static final int SUMMARY_MAX_ITEMS = 30;
+    /** 速览只汇总最近 15 条、每条摘要截断 60 字：输出只需 3-5 条要点，
+     *  清单过长会让模型花大量 token 筛选/自我说明，还容易挤掉正文的输出额度 */
+    public static final int SUMMARY_MAX_ITEMS = 15;
     private static final int SUMMARY_DIGEST_LIMIT = 60;
 
     /** 把最新一批快讯压成注入 system prompt 的清单（纯函数，无 UI 依赖，便于单测）。
@@ -670,9 +671,9 @@ public class AIService {
         }
         LinkedHashSet<String> seenIds = new LinkedHashSet<>();
         StringBuilder sb = new StringBuilder();
-        sb.append("\n\n最近快讯清单（本次获取 ").append(items.size())
-                .append(" 条，以下最多 ").append(SUMMARY_MAX_ITEMS)
-                .append(" 条；仅代表最近一批，不代表全天）：\n");
+        // 不把原始列表总数列出来：模型会纠结「还有 20 条没给我」，反而诱发大段自我说明
+        sb.append("\n\n最近快讯清单（仅汇总最近 ").append(SUMMARY_MAX_ITEMS)
+                .append(" 条；不代表全天，也不代表全部市场信息）：\n");
         int added = 0;
         for (KuaixunItem item : items) {
             if (item == null || added >= SUMMARY_MAX_ITEMS) {
@@ -1114,7 +1115,9 @@ public class AIService {
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("model", modelId);
             requestBody.add("messages", messages);
-            requestBody.addProperty("max_tokens", 4000);
+            // 思考过程与正文共用这个预算：4000 对推理模型偏紧，正文常被挤到一半就撞上限。
+            // 上限只是兜底，模型写完即停，不会因为调高而变慢或更贵
+            requestBody.addProperty("max_tokens", 8000);
             final boolean streaming = onChunk != null;
             if (streaming) {
                 requestBody.addProperty("stream", true);
@@ -1224,6 +1227,13 @@ public class AIService {
         // 放行后按行缓冲，便于整行判断并丢弃中途插入的推理元话术
         StringBuilder lineBuffer = new StringBuilder();
         boolean[] visibleStarted = {false};
+        // 服务端可能在正文写到一半时关流（思考过程与正文共用 max_tokens），
+        // 必须区分「正常收尾」与「被截断 / 中断」，否则半截内容会被当作完整结论
+        boolean[] doneReceived = {false};
+        boolean[] interrupted = {false};
+        boolean[] statusShown = {false};
+        long[] draftStartAt = {0L};
+        String[] finishReason = {null};
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -1233,10 +1243,15 @@ public class AIService {
                 }
                 String data = line.substring(5).trim();
                 if ("[DONE]".equals(data)) {
+                    doneReceived[0] = true;
                     break;
                 }
                 if (data.isEmpty()) {
                     continue;
+                }
+                String fr = parseFinishReason(data);
+                if (fr != null) {
+                    finishReason[0] = fr;
                 }
                 String chunk = parseDeltaContent(data);
                 if (chunk.isEmpty()) {
@@ -1245,18 +1260,54 @@ public class AIService {
                 accumulated.append(chunk);
                 if (!visibleStarted[0]) {
                     pending.append(chunk);
-                    int start = indexOfContentStart(pending);
-                    if (start >= 0) {
-                        visibleStarted[0] = true;
-                        if (onChunk != null) {
-                            onChunk.accept(pending.substring(start));
+                    int first = indexOfContentStart(pending);
+                    if (first >= 0) {
+                        boolean summary = pending.indexOf(SUMMARY_ANCHOR) >= 0;
+                        int second = summary
+                                ? pending.indexOf(SUMMARY_ANCHOR, first + SUMMARY_ANCHOR.length())
+                                : -1;
+                        if (second >= 0) {
+                            // 定稿出现：第一版归入起草/思考阶段丢弃，只显示定稿
+                            visibleStarted[0] = true;
+                            if (onChunk != null) {
+                                onChunk.accept(STREAM_STATUS_PREFIX + pending.substring(second));
+                            }
+                        } else if (!summary) {
+                            // 自选分析 / 追问没有「定稿」概念，照常流式显示
+                            visibleStarted[0] = true;
+                            if (onChunk != null) {
+                                onChunk.accept(STREAM_HINT_PREFIX + pending.substring(first));
+                            }
+                        } else {
+                            // 速览第一版：先归到前置内容压住，只给等待提示
+                            if (draftStartAt[0] == 0L) {
+                                draftStartAt[0] = System.currentTimeMillis();
+                            }
+                            if (!statusShown[0] && onChunk != null) {
+                                statusShown[0] = true;
+                                onChunk.accept(STREAM_HINT_PREFIX + STREAM_THINKING_HINT);
+                            }
+                            // 观察窗内没等到定稿，说明模型只写了一版：按正文放行，
+                            // 避免正常回答也一直憋到流结束
+                            if (onChunk != null
+                                    && System.currentTimeMillis() - draftStartAt[0] > DRAFT_GRACE_MS) {
+                                visibleStarted[0] = true;
+                                onChunk.accept(STREAM_STATUS_PREFIX + pending.substring(first));
+                            }
                         }
-                    } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null
-                            && !isLikelyPreamble(pending)) {
-                        // 正常但不带锚点的回答（如自由追问）不能一直憋着；
-                        // 明显的推理自述则继续压住，等真正的正文锚点出现
-                        visibleStarted[0] = true;
-                        onChunk.accept(pending.toString());
+                    } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null) {
+                        if (isLikelyPreamble(pending)) {
+                            // 明显的推理自述继续压住，但给用户一个可见状态，不要长时间纯空白
+                            if (!statusShown[0]) {
+                                statusShown[0] = true;
+                                onChunk.accept(STREAM_HINT_PREFIX + STREAM_THINKING_HINT);
+                            }
+                        } else {
+                            // 正常但不带锚点的回答（如自由追问）不能一直憋着
+                            visibleStarted[0] = true;
+                            onChunk.accept(statusShown[0]
+                                    ? STREAM_STATUS_PREFIX + pending : pending.toString());
+                        }
                     }
                 } else if (onChunk != null) {
                     // 放行之后仍按行挡一次：模型写到一半插入的英文自述、或「重新按格式写一遍」
@@ -1266,7 +1317,12 @@ public class AIService {
                     while ((nl = lineBuffer.indexOf("\n")) >= 0) {
                         String oneLine = lineBuffer.substring(0, nl + 1);
                         lineBuffer.delete(0, nl + 1);
-                        if (!isLikelyPreamble(oneLine)) {
+                        int restart = oneLine.indexOf("【一句话综述】");
+                        if (restart >= 0) {
+                            // 模型把整份速览重写了一遍：从定稿起点清空气泡重来，
+                            // 夹在两遍之间的英文自述与草稿也随之消失
+                            onChunk.accept(STREAM_STATUS_PREFIX + oneLine.substring(restart));
+                        } else if (!isLikelyPreamble(oneLine)) {
                             onChunk.accept(oneLine);
                         }
                     }
@@ -1275,9 +1331,11 @@ public class AIService {
         } catch (java.net.SocketTimeoutException e) {
             // 流式已吐出的内容必须保留，不能被整句超时提示替换掉
             PluginLog.info("[AIService] stream read timeout, kept partial_len=" + accumulated.length());
+            interrupted[0] = true;
             accumulated.append("\n\n").append(TIMEOUT_HINT);
         } catch (java.io.IOException e) {
             PluginLog.error("[AIService] stream read failed: " + e.getMessage(), e);
+            interrupted[0] = true;
             accumulated.append("\n\n（生成中断，以上为已生成内容）");
         } finally {
             // 流结束或异常时把不足一行的剩余文本补出去，同样不收推理自述
@@ -1286,12 +1344,24 @@ public class AIService {
             }
             conn.disconnect();
         }
-        if (!visibleStarted[0] && pending.length() > 0 && onChunk != null
-                && !isLikelyPreamble(pending)) {
-            onChunk.accept(pending.toString());
+        if (!visibleStarted[0] && pending.length() > 0 && onChunk != null) {
+            // 整段都被压住（速览第一版没等到定稿、或全程只有思考过程）：
+            // 交最终清洗统一收敛，避免把草稿和英文自述一起倒进气泡
+            String cleaned = stripPreamble(pending.toString());
+            if (!cleaned.isEmpty()) {
+                onChunk.accept(STREAM_STATUS_PREFIX + cleaned);
+            }
         }
         if (cancelled) {
             accumulated.append("\n\n（已停止生成，以上为已生成内容）");
+        } else if (!interrupted[0]) {
+            // 异常分支已各自带提示；这里是「看似正常收尾、实则没写完」的两种情况
+            if ("length".equalsIgnoreCase(finishReason[0])) {
+                // 思考过程与正文共用 max_tokens，正文常被挤到一半就撞上限，必须让用户看见
+                accumulated.append("\n\n（本次生成因模型输出长度上限被截断，可重试或减少快讯条数）");
+            } else if (!doneReceived[0]) {
+                accumulated.append("\n\n（连接提前结束，本次生成不完整，请重试）");
+            }
         }
         JsonObject message = new JsonObject();
         message.addProperty("content", accumulated.toString());
@@ -1306,6 +1376,19 @@ public class AIService {
 
     /** 前言过滤的兜底字符数：超过仍未找到正文锚点、且不像推理自述时才直接显示，避免干等 */
     private static final int PREAMBLE_FALLBACK_LIMIT = 200;
+    /** onChunk 以此开头表示「整段替换气泡」而非追加，用于等待占位与正文替换 */
+    public static final String STREAM_STATUS_PREFIX = "\u0000";
+    /** onChunk 以此开头表示「草稿/等待阶段」，用弱化样式整段替换，与定稿气泡区分。
+     *  推理模型常先写一版完整草稿、自查后再写定稿；第一版先弱化显示，检测定稿时再换正式样式 */
+    public static final String STREAM_HINT_PREFIX = "\u0001";
+    /** 等待占位只描述「正在收数据、正文还没到」，不承诺已隐藏思考过程：
+     *  过滤是启发式的，历史上有漏放行，写成「已隐藏」是过度承诺 */
+    private static final String STREAM_THINKING_HINT =
+            "正在接收模型输出，等待正文段落…";
+    /** 速览的答案起点；模型自查后重写时会再次出现，据此判定第一版是草稿 */
+    private static final String SUMMARY_ANCHOR = "【一句话综述】";
+    /** 第一版压住的观察窗：窗内没等到定稿就按正文放行，避免正常回答也憋到流结束 */
+    private static final long DRAFT_GRACE_MS = 5000L;
     /** 整段都是推理自述、没有任何正文锚点时的兜底提示 */
     private static final String INVALID_CONTENT_HINT = "（本次未返回有效分析内容，请重试或更换模型）";
 
@@ -1361,6 +1444,22 @@ public class AIService {
         java.util.regex.Matcher numbered = java.util.regex.Pattern
                 .compile("(?m)^\\s*1[.、．]").matcher(s);
         return numbered.find() ? numbered.start() : -1;
+    }
+
+    /** 从一条 SSE data 提取 finish_reason（stop / length / content_filter 等）；没有则返回 null */
+    static String parseFinishReason(String data) {
+        try {
+            JsonObject obj = JsonParser.parseString(data).getAsJsonObject();
+            JsonArray choices = obj.getAsJsonArray("choices");
+            if (choices == null || choices.size() == 0) {
+                return null;
+            }
+            JsonObject choice = choices.get(0).getAsJsonObject();
+            return choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull()
+                    ? choice.get("finish_reason").getAsString() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** 从一条 SSE data 提取增量文本；纯静态方法，便于单测 */
@@ -1453,12 +1552,25 @@ public class AIService {
         return "AI 返回解析失败：响应格式无法识别，请重试或更换模型（详情见日志）";
     }
 
+    /** 推理模型常「先起草 → 再自查 → 再定稿」，把整份三段速览输出两遍，
+     *  中间还夹着英文自述。以【一句话综述】为答案起点，出现多次时只留最后一份（定稿版）。
+     *  该段落名只在速览出现，对自选分析 / 追问无影响。 */
+    static String keepLastDraft(String text) {
+        int first = text.indexOf("【一句话综述】");
+        if (first < 0) {
+            return text;
+        }
+        int last = text.lastIndexOf("【一句话综述】");
+        return last > first ? text.substring(last) : text;
+    }
+
     /** 丢弃推理模型写在正文开头的思考/复述前言，锚点与流式首帧过滤保持一致。
      *  找不到正文起点或截断后过短时原样返回，避免误伤正常回答。纯静态方法，便于单测。 */
     static String stripPreamble(String text) {
         if (text == null) {
             return "";
         }
+        text = keepLastDraft(text);
         int start = indexOfContentStart(text);
         if (start == 0) {
             return text;

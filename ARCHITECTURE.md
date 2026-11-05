@@ -92,7 +92,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 - **首轮分析** `analyzeWatchlistAsync`：后台拉均线（失败降级无均线）→ 构建上下文 → 以 `ANALYSIS_SYSTEM_PROMPT` 调模型 → `enforceConsistency` 后处理。
 - **追问聊天** `chatAsync`：对话历史按下标定角色（偶数位 user、奇数位 assistant），先做 snapshot 防并发修改，再注入基线后发整段 messages。
-- **HTTP 层** `callAPI`：temperature 与 `reasoning_effort` 由当前配置的实例字段决定（默认 0.3；kimi-k3 预设为 1，商汤预设附加 `reasoning_effort=none`），max_tokens 4000；401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出。
+- **HTTP 层** `callAPI`：temperature 与 `reasoning_effort` 由当前配置的实例字段决定（默认 0.3；kimi-k3 预设为 1，商汤预设附加 `reasoning_effort=none`），max_tokens 8000（思考过程与正文共用预算，避免正文被挤断）；401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出。
 - **解析** `extractResponseText`：依次尝试 `choices[0].message.content` → `reasoning_content` → `reasoning`；无法识别的结构只写日志、不把原文回显给用户（防敏感信息泄露）。输出统一过 `stripMarkdown` 去除 markdown 符号以适配 Swing 纯文本气泡。
 
 ### 输出确定性与跨轮一致性
@@ -105,7 +105,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 - **AISettingsPanel**：多配置表单（配置下拉 + 新建/删除、名称/地址/模型/Key 编辑、测试连接），由 `AISettingsDialog`（工具窗口标题栏齿轮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。切换配置时表单值写回上一份、Key 异步回填且互不覆盖；测试连接期间按钮禁用并显示耗时进度，结束就地回显结果。
 - **AISettingsDialog**：薄壳对话框，只负责窗口尺寸/居中与取消/保存按钮；保存前统一校验所有配置的地址/模型/名称，再整体落盘。
 - **AISettingsConfigurable**：标准 Configurable 生命周期（isModified/apply/reset）；`isModified` 用面板快照 `getSnapshot()` 比较，快照不含异步回填的 Key 值，避免钥匙串首访导致误判或阻塞设置页。保存后工具窗口下次进入 AI 入口时经 `refreshAiConfigFromStorage` 重读配置。
-- **AI 对话框**（内嵌于 WatchlistPanel）：聊天气泡改为自绘圆角面板（不再拼 HTML），主题色取 `JBColor`；跨组件引用（loadingPanel / appendMessage / sendMessage / sendMessageSilent / setRequesting 等回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 收起（`setVisible(false)`）保留会话、再点同一入口恢复；标题栏关闭按钮仍为 `DISPOSE_ON_CLOSE`，可彻底重开一轮。三类会话按入口分别存在 `aiDialogs` 里互不串台，收起期间的流式回调改用 `isDisplayable()` 判断继续写入；生成期间发送按钮切换为「停止」。
+- **AI 对话框**（内嵌于 WatchlistPanel）：聊天气泡改为自绘圆角面板（不再拼 HTML），主题色取 `JBColor`；跨组件引用（loadingPanel / appendMessage / sendMessage / sendMessageSilent / setRequesting 等回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 收起（`setVisible(false)`）保留会话、再点同一入口恢复；标题栏关闭按钮仍为 `DISPOSE_ON_CLOSE`，可彻底重开一轮。三类会话按入口分别存在 `aiDialogs` 里互不串台，收起期间的流式回调改用 `isDisplayable()` 判断继续写入；生成期间发送按钮切换为「停止」。AI 气泡撑满可用宽度，用户气泡右对齐自适应；等待/思考/第一版草稿经 `STREAM_HINT_PREFIX` 以灰字斜体、无底框的弱化样式显示，定稿由 `STREAM_STATUS_PREFIX` 切回正式气泡。
 - **标题栏入口** `AiQuickActions` / `ShowAiSettingsAction`：通过 `toolWindow.setTitleActions` 注册，Action 从 ToolWindow Content 反查 `KuaixunPanel` 再触发对应入口，快讯 / 自选任意页签下都能一键直达。
 
 ## 线程模型

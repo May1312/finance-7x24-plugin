@@ -820,7 +820,8 @@ public class WatchlistPanel extends JPanel {
                     JLabel loadingLabel = (JLabel) dialog.getRootPane().getClientProperty("loadingLabel");
                     if (loading != null && loadingLabel != null) {
                         // 与自选分析一致的等待计时：请求结束后 loadingPanel 被隐藏，下一次 tick 自停
-                        final int newsCount = items.size();
+                        // 计时文案显示真实汇总条数，别再写原始列表长度（之前会虚报成 50 条）
+                        final int newsCount = Math.min(items.size(), AIService.SUMMARY_MAX_ITEMS);
                         final long startAt = System.currentTimeMillis();
                         final Timer waitTimer = new Timer(1000, ev -> {
                             if (!loading.isVisible()) {
@@ -908,9 +909,14 @@ public class WatchlistPanel extends JPanel {
      * 构建 AI 对话框（自选分析、快讯解读共用）
      */
     @SuppressWarnings("unchecked")
-    /** 聊天气泡最大文本宽度（对话框固定 560，留出边距与内边距） */
+    /** 用户气泡最大文本宽度（短消息右对齐、按内容自适应） */
     private static final int MAX_BUBBLE_TEXT_WIDTH = 380;
     private static final int MIN_BUBBLE_TEXT_WIDTH = 48;
+    /** AI 对话框固定尺寸；AI 气泡按可用宽度撑满，避免右侧空出一块 */
+    private static final int AI_DIALOG_WIDTH = 560;
+    private static final int AI_DIALOG_HEIGHT = 460;
+    /** 560 - messagesPanel 左右边距 28 - 垂直滚动条 14 - 气泡左右内边距 24 */
+    private static final int AI_BUBBLE_TEXT_WIDTH = AI_DIALOG_WIDTH - 28 - 14 - 24;
     /** 与 IDEA 蓝灰系一致的气泡底色，随明暗主题切换；不再用微信绿 */
     private static final Color USER_BUBBLE_BG =
             new JBColor(new Color(0xD6E8FF), new Color(0x2F4A6B));
@@ -920,6 +926,8 @@ public class WatchlistPanel extends JPanel {
     /** 自绘圆角气泡；Swing HTML 3.2 不支持 border-radius，只能画出来 */
     private static class BubblePanel extends JPanel {
         private final Color bg;
+        /** 思考/等待状态下不画气泡底框，只留一行弱化文字 */
+        private boolean statusMode;
 
         BubblePanel(Color bg, JTextArea area) {
             this.bg = bg;
@@ -929,16 +937,25 @@ public class WatchlistPanel extends JPanel {
             add(area, BorderLayout.CENTER);
         }
 
+        void setStatusMode(boolean status) {
+            if (statusMode != status) {
+                statusMode = status;
+                repaint();
+            }
+        }
+
         @Override
         protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
-                        RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(bg);
-                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 14, 14);
-            } finally {
-                g2.dispose();
+            if (!statusMode) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                try {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                            RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(bg);
+                    g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 14, 14);
+                } finally {
+                    g2.dispose();
+                }
             }
             super.paintComponent(g);
         }
@@ -949,8 +966,12 @@ public class WatchlistPanel extends JPanel {
         final JPanel row;
         final BubblePanel bubble;
         final JTextArea area;
+        private final boolean isUser;
+        private final Font baseFont;
+        private boolean statusMode;
 
         Bubble(boolean isUser, String text) {
+            this.isUser = isUser;
             area = new JTextArea(text == null ? "" : text);
             area.setEditable(false);
             area.setLineWrap(true);
@@ -958,14 +979,37 @@ public class WatchlistPanel extends JPanel {
             area.setOpaque(false);
             area.setBorder(null);
             Font labelFont = UIManager.getFont("Label.font");
-            area.setFont(labelFont != null ? labelFont.deriveFont(13f)
-                    : JBFont.label().deriveFont(13f));
+            baseFont = labelFont != null ? labelFont : JBFont.label();
+            area.setFont(baseFont.deriveFont(Font.PLAIN, 13f));
             area.setForeground(UIUtil.getLabelForeground());
             bubble = new BubblePanel(isUser ? USER_BUBBLE_BG : AI_BUBBLE_BG, area);
-            row = new JPanel(new FlowLayout(isUser ? FlowLayout.RIGHT : FlowLayout.LEFT, 0, 0));
+            if (isUser) {
+                // 用户消息通常很短，右对齐并按内容自适应
+                row = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+                row.add(bubble);
+            } else {
+                // AI 输出占满整行：BorderLayout.CENTER 会把气泡横向拉伸到容器宽度
+                row = new JPanel(new BorderLayout());
+                row.add(bubble, BorderLayout.CENTER);
+            }
             row.setOpaque(false);
-            row.add(bubble);
             setText(text == null ? "" : text);
+        }
+
+        /** 思考/等待状态：灰字斜体、无气泡底框；正文：常规字体与气泡 */
+        void setStatusMode(boolean status) {
+            if (statusMode == status) {
+                return;
+            }
+            statusMode = status;
+            bubble.setStatusMode(status);
+            area.setFont(status
+                    ? baseFont.deriveFont(Font.ITALIC, 12f)
+                    : baseFont.deriveFont(Font.PLAIN, 13f));
+            area.setForeground(status
+                    ? JBColor.namedColor("Label.disabledForeground", new Color(0x999999))
+                    : UIUtil.getLabelForeground());
+            bubble.repaint();
         }
 
         void setText(String text) {
@@ -975,8 +1019,9 @@ public class WatchlistPanel extends JPanel {
             for (String line : text.split("\n", -1)) {
                 natural = Math.max(natural, fm.stringWidth(line));
             }
-            int w = Math.max(MIN_BUBBLE_TEXT_WIDTH,
-                    Math.min(natural + 2, MAX_BUBBLE_TEXT_WIDTH));
+            int w = isUser
+                    ? Math.max(MIN_BUBBLE_TEXT_WIDTH, Math.min(natural + 2, MAX_BUBBLE_TEXT_WIDTH))
+                    : AI_BUBBLE_TEXT_WIDTH;
             // 给定宽度后取换行后的真实高度，避免气泡留大片空白；
             // FontMetrics 估算行数作为下界，防止不同 LAF 下 getPreferredSize 不按当前宽度换行
             int estimatedLines = 0;
@@ -1002,7 +1047,7 @@ public class WatchlistPanel extends JPanel {
         JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(this),
                 title, Dialog.ModalityType.MODELESS);
         dialog.setLayout(new BorderLayout());
-        dialog.setSize(560, 460);
+        dialog.setSize(AI_DIALOG_WIDTH, AI_DIALOG_HEIGHT);
         dialog.setLocationRelativeTo(SwingUtilities.getWindowAncestor(this));
         // JDialog 没有 Frame.ICONIFIED 最小化态：Esc 用 setVisible(false) 收起并保留会话，
         // 标题栏关闭按钮仍为真正关闭（dispose），方便重新开一轮新会话
@@ -1061,7 +1106,16 @@ public class WatchlistPanel extends JPanel {
                         messagesPanel.add(b.row);
                         messagesPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
                     }
-                    streamingText.append(chunk);
+                    String text = chunk == null ? "" : chunk;
+                    boolean hint = text.startsWith(AIService.STREAM_HINT_PREFIX);
+                    boolean replace = text.startsWith(AIService.STREAM_STATUS_PREFIX);
+                    if (hint || replace) {
+                        // 整段替换：等待提示与第一版草稿用弱化样式，定稿恢复常规气泡
+                        streamingText.setLength(0);
+                        text = text.substring(1);
+                        streamingBubble[0].setStatusMode(hint);
+                    }
+                    streamingText.append(text);
                     long now = System.currentTimeMillis();
                     if (!first && now - lastRender[0] < 80) {
                         return;
@@ -1077,6 +1131,8 @@ public class WatchlistPanel extends JPanel {
                     if (!dialog.isDisplayable()) return;
                     String text = finalText == null ? "" : finalText;
                     if (streamingBubble[0] != null) {
+                        // 最终文本一定是定稿：即使模型没写第二版，也把草稿样式切回正式气泡
+                        streamingBubble[0].setStatusMode(false);
                         streamingBubble[0].setText(text);
                     } else {
                         messagesPanel.add(new Bubble(false, text).row);
