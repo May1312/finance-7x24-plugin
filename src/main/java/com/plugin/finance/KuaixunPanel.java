@@ -1,6 +1,9 @@
 package com.plugin.finance;
 
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.wm.ToolWindow;
+import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.JBFont;
@@ -9,14 +12,20 @@ import com.intellij.util.ui.JBUI;
 import javax.swing.*;
 import javax.swing.ScrollPaneConstants;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class KuaixunPanel extends JPanel {
+public class KuaixunPanel extends JPanel implements AiSessionHost {
+    private static final String TOOL_WINDOW_ID = "Finance 7x24 News";
+
     private final Project project;
     private final WatchlistPanel watchlistPanel;
     private final JPanel cardsPanel = new JPanel();
@@ -24,6 +33,10 @@ public class KuaixunPanel extends JPanel {
     private final JBScrollPane newsScrollPane = new JBScrollPane();
     private final JLabel statusLabel = new JLabel("正在加载 7x24 快讯...");
     private final Timer autoRefreshTimer;
+    private final JPanel newsPanel = new JPanel(new BorderLayout());
+    private final JTabbedPane tabs = new JTabbedPane();
+    /** 三类 AI 会话分别挂在各自的页签上，key 与 WatchlistPanel 的入口常量对应 */
+    private final Map<String, AiChatPanel> aiSessions = new HashMap<>();
     private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
     private int currentPage = 1;
     private final Set<String> knownIds = ConcurrentHashMap.newKeySet();
@@ -76,9 +89,9 @@ public class KuaixunPanel extends JPanel {
         this.newsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         newsPanel.add(this.newsScrollPane, BorderLayout.CENTER);
 
-        JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("快讯", newsPanel);
         watchlistPanel = new WatchlistPanel(project);
+        watchlistPanel.setAiSessionHost(this);
         tabs.addTab("自选", watchlistPanel);
 
         // AI 入口全部收进工具窗口标题栏（见 AiQuickActions），内容区不再有独立按钮条
@@ -89,16 +102,21 @@ public class KuaixunPanel extends JPanel {
 
         // 切换tab时控制对应面板的timer：只激活当前tab的计时
         tabs.addChangeListener(e -> {
-            if (tabs.getSelectedIndex() == 0) {
+            Component selected = tabs.getSelectedComponent();
+            if (selected == newsPanel) {
                 // 切到快讯
                 if (!autoRefreshTimer.isRunning()) {
                     autoRefreshTimer.start();
                 }
                 watchlistPanel.pauseTimer();
-            } else {
+            } else if (selected == watchlistPanel) {
                 // 切到自选
                 autoRefreshTimer.stop();
                 watchlistPanel.resumeTimer();
+            } else {
+                // AI 会话页签：两边的行情轮询都停掉
+                autoRefreshTimer.stop();
+                watchlistPanel.pauseTimer();
             }
         });
         
@@ -116,7 +134,8 @@ public class KuaixunPanel extends JPanel {
     @Override
     public void addNotify() {
         super.addNotify();
-        if (!autoRefreshTimer.isRunning()) {
+        // 只有当前停在快讯页签时才恢复轮询，避免 AI 会话页签下白跑请求
+        if (tabs.getSelectedComponent() == newsPanel && !autoRefreshTimer.isRunning()) {
             autoRefreshTimer.start();
         }
         refreshData();
@@ -354,7 +373,7 @@ public class KuaixunPanel extends JPanel {
         watchlistPanel.openNewsSummary(latestItems);
     }
 
-    /** 标题栏「AI选股分析」入口：直接发起自选股分析，无需先切到自选页 */
+    /** 标题栏「AI复盘」入口：直接发起自选股分析，无需先切到自选页 */
     public void openAiStockAnalysis() {
         watchlistPanel.showAiAnalysis();
     }
@@ -362,6 +381,107 @@ public class KuaixunPanel extends JPanel {
     /** 转发自选页当前市场筛选名，供标题栏入口的动态提示使用 */
     public String currentMarketName() {
         return watchlistPanel.currentMarketName();
+    }
+
+    // ── AiSessionHost：AI 会话挂成页签，关闭页签即结束会话 ──
+
+    @Override
+    public void addAiSession(String key, String title, AiChatPanel panel) {
+        AiChatPanel previous = aiSessions.put(key, panel);
+        if (previous != null && previous != panel) {
+            // 兜底：同一入口残留的旧会话（例如页签已被移除但登记未清理）先销毁
+            int stale = tabs.indexOfComponent(previous);
+            if (stale >= 0) {
+                tabs.removeTabAt(stale);
+            }
+            previous.disposeSession();
+        }
+        tabs.addTab(title, panel);
+        int index = tabs.indexOfComponent(panel);
+        if (index >= 0) {
+            tabs.setTabComponentAt(index, buildAiTabHeader(key, title, panel));
+            tabs.setSelectedIndex(index);
+        }
+        bringToFront();
+        SwingUtilities.invokeLater(panel::focusInput);
+    }
+
+    @Override
+    public AiChatPanel findAiSession(String key) {
+        AiChatPanel panel = aiSessions.get(key);
+        // 页签被用户手动关闭后组件已脱离页签，视为会话不存在
+        return panel != null && panel.getParent() != null ? panel : null;
+    }
+
+    @Override
+    public void selectAiSession(AiChatPanel panel) {
+        int index = tabs.indexOfComponent(panel);
+        if (index >= 0) {
+            tabs.setSelectedIndex(index);
+            bringToFront();
+        }
+    }
+
+    @Override
+    public void closeAiSession(String key) {
+        AiChatPanel panel = aiSessions.remove(key);
+        if (panel == null) {
+            return;
+        }
+        int index = tabs.indexOfComponent(panel);
+        // removeTabAt 对「关的是当前选中页签」默认落到右侧相邻，这里改为：
+        // 还有别的 AI 会话页签时落左侧相邻，全关完才回第一个（快讯）；
+        // 关的是后台页签时不动当前选中，免得把用户从正在看的页面拽走
+        boolean wasSelected = index >= 0 && tabs.getSelectedIndex() == index;
+        if (index >= 0) {
+            tabs.removeTabAt(index);
+        }
+        panel.disposeSession();
+        if (!wasSelected) {
+            return;
+        }
+        if (aiSessions.isEmpty()) {
+            tabs.setSelectedIndex(0);
+        } else {
+            // AI 页签只会排在快讯/自选之后，index-1 必然是有效页签
+            tabs.setSelectedIndex(index - 1);
+        }
+    }
+
+    /** 工具窗口可能在侧边栏收起，打开会话时把窗口唤回前台 */
+    private void bringToFront() {
+        ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID);
+        if (toolWindow != null && !toolWindow.isDisposed()) {
+            toolWindow.activate(null, true);
+        }
+    }
+
+    /** AI 页签标题带关闭按钮：点击 × 关闭页签并中止该会话的进行中请求 */
+    private JComponent buildAiTabHeader(String key, String title, AiChatPanel panel) {
+        JPanel header = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0));
+        header.setOpaque(false);
+        JLabel label = new JLabel(title);
+        JButton closeBtn = new JButton(AllIcons.Actions.Close);
+        closeBtn.setRolloverIcon(AllIcons.Actions.CloseHovered);
+        closeBtn.setPressedIcon(AllIcons.Actions.CloseHovered);
+        closeBtn.setPreferredSize(new Dimension(JBUI.scale(16), JBUI.scale(16)));
+        closeBtn.setContentAreaFilled(false);
+        closeBtn.setBorderPainted(false);
+        closeBtn.setFocusable(false);
+        closeBtn.setToolTipText("关闭该 AI 会话");
+        closeBtn.addActionListener(e -> closeAiSession(key));
+        header.add(label);
+        header.add(closeBtn);
+
+        MouseAdapter selectOnClick = new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                tabs.setSelectedComponent(panel);
+            }
+        };
+        header.addMouseListener(selectOnClick);
+        label.addMouseListener(selectOnClick);
+        return header;
     }
 
     private JPanel createCard(KuaixunItem item) {

@@ -2,6 +2,7 @@ package com.plugin.finance;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.intellij.credentialStore.CredentialAttributes;
@@ -22,7 +23,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,7 +36,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 public class AIService {
 
@@ -544,9 +543,18 @@ public class AIService {
 
     /** 中止当前流式请求；createAiService 每次新建实例，不会跨请求残留 */
     private volatile boolean cancelled = false;
+    /** 正在使用的连接：cancel 时直接断开，否则 readLine 要阻塞到读超时才响应停止 */
+    private volatile HttpURLConnection activeConn;
 
     public void cancel() {
         cancelled = true;
+        HttpURLConnection conn = activeConn;
+        if (conn != null) {
+            try {
+                conn.disconnect();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /** 按配置构造：地址、模型 ID、采样参数全部来自该配置，与厂商注册表彻底解耦 */
@@ -557,38 +565,6 @@ public class AIService {
         this.apiUrl = normalizeBaseUrl(p.baseUrl);
         this.temperature = p.temperature > 0 ? p.temperature : DEFAULT_TEMPERATURE;
         this.reasoningEffortNone = p.reasoningEffortNone;
-    }
-
-    /** 兼容旧调用：modelId 命中预设时按其地址与参数构造 */
-    public AIService(String apiKey, String modelId) {
-        this(apiKey, legacyProfile(modelId, null));
-    }
-
-    /** 兼容旧调用：显式指定 OpenAI 兼容地址 */
-    public AIService(String apiKey, String modelId, String customBaseUrl) {
-        this(apiKey, legacyProfile(
-                CUSTOM_MODEL_ID.equals(modelId)
-                        ? PropertiesComponent.getInstance().getValue(LEGACY_MODEL_NAME_KEY, "")
-                        : modelId,
-                customBaseUrl));
-    }
-
-    private static AiProfile legacyProfile(String modelId, String baseUrl) {
-        AiProfile p = new AiProfile();
-        p.model = modelId == null ? "" : modelId;
-        if (baseUrl != null && !baseUrl.trim().isEmpty()) {
-            p.baseUrl = baseUrl;
-            return p;
-        }
-        for (Preset preset : PRESETS) {
-            if (preset.model.equals(modelId)) {
-                p.baseUrl = preset.baseUrl;
-                p.temperature = preset.temperature;
-                p.reasoningEffortNone = preset.reasoningEffortNone;
-                break;
-            }
-        }
-        return p;
     }
 
     /** 生成超时统一提示：HTTP 读取超时与外层兜底共用，避免误导成 Key 或网络问题 */
@@ -824,7 +800,7 @@ public class AIService {
      *  A股 9:00 盘前 / 9:15-9:25 集合竞价 / 9:25-9:30 开盘准备 / 9:30-11:30 早盘 / 11:30-13:00 午间休市 / 13:00-15:00 午盘 / 15:00 后盘后
      *  港股 9:30 盘前 / 9:30-12:00 早盘 / 12:00-13:00 午间休市 / 13:00-16:00 午盘 / 16:00 后盘后
      *  美股按美东时间（自动处理夏令时）：盘前(4:00-9:30) / 盘中(9:30-16:00) / 盘后(16:00-20:00) / 夜盘(20:00-4:00)
-     *  伦敦金 周一 7:00 - 周六 4:00 为盘中，周六 4:00 - 周一 7:00 为周末休市/盘前。
+     *  伦敦金周一开市至周六收市为盘中（北京时间随夏令时平移，冬令时开盘 7:00 / 收 6:00）。
      *  节假日休市未覆盖，属已知简化。 */
     private static String sessionStatus(String market, ZonedDateTime bjNow) {
         DayOfWeek dow = bjNow.getDayOfWeek();
@@ -858,14 +834,19 @@ public class AIService {
                 if (nm < 960) return "盘中(美东)";      // 9:30-16:00 ET
                 return "盘后(美东)";                     // 16:00-24:00 ET
             }
-            default: // 黄金（伦敦金 / 现货黄金）
-                if (dow == DayOfWeek.SATURDAY) {
-                    if (m < 240) return "盘中(伦敦金)"; // 周六 04:00 前仍交易中
-                    return "周末休市";
-                }
+            default: { // 黄金（伦敦金 / 现货黄金）
+                // 开收市时间随伦敦夏令时平移：夏令时开 06:00 / 收 05:00（北京时间），冬令时各晚 1 小时
+                boolean dst = ZoneId.of("Europe/London").getRules()
+                        .isDaylightSavings(bjNow.toInstant());
+                int openMin = dst ? 360 : 420;
+                int closeMin = dst ? 300 : 360;
                 if (dow == DayOfWeek.SUNDAY) return "周末休市";
-                if (dow == DayOfWeek.MONDAY && m < 420) return "盘前(伦敦金)"; // 周一 07:00 前
+                if (dow == DayOfWeek.SATURDAY) {
+                    return m < closeMin ? "盘中(伦敦金)" : "周末休市";
+                }
+                if (dow == DayOfWeek.MONDAY && m < openMin) return "盘前(伦敦金)";
                 return "盘中(伦敦金)";
+            }
         }
     }
 
@@ -893,7 +874,8 @@ public class AIService {
         Pattern codeInBrackets = Pattern.compile("\\(([^)]+)\\)");
 
         // ① 按三阶段改写「今日/目前/昨日」：盘前→「昨日」、盘中→「目前」、盘后保持「今日」
-        Pattern linePrefix = Pattern.compile("(【[^】]+】[\\s\\S]*?)(今日|目前|昨日)收(红|绿)");
+        // 收平也要改写，否则平盘个股的「今日收平」在盘前/盘中语境下仍然错误
+        Pattern linePrefix = Pattern.compile("(【[^】]+】[\\s\\S]*?)(今日|目前|昨日)收(红|绿|平)");
         Matcher m = linePrefix.matcher(text);
         StringBuilder sb = new StringBuilder();
         while (m.find()) {
@@ -901,7 +883,9 @@ public class AIService {
             String oldPrefix = m.group(2);
             String color = m.group(3);
             String newPrefix = oldPrefix;
-            Matcher cm = codeInBrackets.matcher(head);
+            // 只看最后一个分段：head 可能跨越多只股票的段落，取前面的括号会套错市场时段
+            int lastBlock = head.lastIndexOf("【");
+            Matcher cm = codeInBrackets.matcher(lastBlock >= 0 ? head.substring(lastBlock) : head);
             if (cm.find()) {
                 String market = marketOf(cm.group(1));
                 if (!market.isEmpty()) {
@@ -927,7 +911,8 @@ public class AIService {
             String head = mk.group(1);
             String candle = mk.group(2);
             String correctCandle = candle;
-            Matcher cm = codeInBrackets.matcher(head);
+            int lastBlock = head.lastIndexOf("【");
+            Matcher cm = codeInBrackets.matcher(lastBlock >= 0 ? head.substring(lastBlock) : head);
             if (cm.find()) {
                 Double pct = chgByCode.get(cm.group(1));
                 if (pct != null && Math.abs(pct) < 0.05) {
@@ -1122,6 +1107,14 @@ public class AIService {
             if (streaming) {
                 requestBody.addProperty("stream", true);
             }
+            // 记录流式期间是否真的显示过正文：厂商拒绝流式时会回退整包，
+            // 两者的收尾清洗方式不同（已经追加显示过的内容不能再按「最后一份」重排）
+            java.util.concurrent.atomic.AtomicBoolean streamedVisible =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            if (onChunk != null) {
+                // 首帧前先给占位：模型思考期、渠道整包返回时，界面不会长时间空白
+                onChunk.accept(STREAM_HINT_PREFIX + STREAM_WAITING_HINT);
+            }
 
             // 采样参数来自当前配置（如 kimi-k3 仅接受 1），不再依赖内置模型注册表
             requestBody.addProperty("temperature", temperature);
@@ -1132,16 +1125,28 @@ public class AIService {
 
             String jsonRequest = gson.toJson(requestBody);
             PluginLog.info("[AIService] callModel calling callAPI, request_len=" + jsonRequest.length());
-            String response = callAPI(jsonRequest, streaming, onChunk);
+            String response;
+            try {
+                response = callAPI(jsonRequest, streaming, onChunk, streamedVisible);
+            } finally {
+                activeConn = null;
+            }
             PluginLog.info("[AIService] callModel got response, len=" +
                 (response != null ? response.length() : 0) + ", preview=" +
                 (response != null ? response.substring(0, Math.min(200, response.length())) : "null"));
-            // 所有入口统一剥离推理模型写在正文开头的思考前言
-            String extracted = stripPreamble(extractResponseText(response));
+            // 流式时气泡已按追加方式显示过全文，这里只丢弃开头前言：
+            // 再按「最后一份」重排会让已显示内容在收尾时突然被截掉
+            String text = extractResponseText(response);
+            String extracted = streamedVisible.get() ? trimPreambleOnly(text) : stripPreamble(text);
             PluginLog.info("[AIService] callModel extracted, len=" +
                 (extracted != null ? extracted.length() : 0));
             return extracted;
         } catch (Exception e) {
+            // 主动停止会打断连接，异常是预期结果，不能当成失败提示给用户
+            if (cancelled) {
+                PluginLog.info("[AIService] callModel cancelled: " + e.getClass().getSimpleName());
+                return "（已停止生成，以上为已生成内容）";
+            }
             PluginLog.error("[AIService] callModel EXCEPTION: " + e.getClass().getName() + " - " + e.getMessage(), e);
             // 读取/连接超时由 HTTP 层负责，给可操作提示；外层不再叠加同长的全局超时
             if (e instanceof java.net.SocketTimeoutException) {
@@ -1152,7 +1157,8 @@ public class AIService {
     }
 
     private String callAPI(String jsonRequest, boolean streaming,
-                           java.util.function.Consumer<String> onChunk) throws Exception {
+                           java.util.function.Consumer<String> onChunk,
+                           java.util.concurrent.atomic.AtomicBoolean streamedVisible) throws Exception {
         if (apiUrl == null || apiUrl.isEmpty()) {
             throw new IllegalStateException("未配置接口地址，请在 AI 设置里填写 OpenAI 兼容地址（填到 /v1 即可）");
         }
@@ -1160,9 +1166,17 @@ public class AIService {
         RuntimeException last429 = null;
         String request = jsonRequest;
         boolean useStream = streaming;
-        for (int attempt = 0; attempt < 4; attempt++) {
+        // 厂商参数差异各降级一次：拒收 temperature 的去掉，只认 max_completion_tokens 的换字段
+        boolean temperatureDropped = false;
+        boolean completionTokensUsed = false;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            // 停止生成后不再重发：退避醒来或参数降级回到这里都要先认 cancelled
+            if (cancelled) {
+                throw new java.util.concurrent.CancellationException("已停止生成");
+            }
             URL url = URI.create(apiUrl).toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            activeConn = conn;
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Authorization", "Bearer " + apiKey);
@@ -1170,7 +1184,8 @@ public class AIService {
                 conn.setRequestProperty("Accept", "text/event-stream");
             }
             conn.setConnectTimeout(10000);
-            conn.setReadTimeout(60000);
+            // 整包响应要等模型写完；推理模型的思考期可能很长，固定 60 秒会把正常生成掐断
+            conn.setReadTimeout(useStream ? 120000 : 180000);
             conn.setDoOutput(true);
 
             try (OutputStream os = conn.getOutputStream()) {
@@ -1181,45 +1196,116 @@ public class AIService {
             PluginLog.info("[AIService] callAPI response code=" + code);
             if (code < 200 || code >= 300) {
                 String errorBody = readStream(conn.getErrorStream());
+                // 错误分支既可能重试也可能抛异常，先释放连接，避免句柄泄漏
+                conn.disconnect();
+                String detail = errorBody == null ? "" : errorBody.toLowerCase(java.util.Locale.ROOT);
+                // 鉴权与限流先按原语义处理，不能被错误体里的参数名带偏
+                if (code == 401) {
+                    throw new RuntimeException("API Key 无效或已过期（HTTP 401）");
+                }
+                if (code == 429) {
+                    last429 = new RuntimeException("请求频率超限，请稍后重试（HTTP 429）");
+                    if (attempt < 3) {
+                        long waitMs = (long) Math.pow(2, attempt + 1) * 1000L;
+                        PluginLog.info("[AIService] 429 retry attempt=" + (attempt + 1) + "/3, waiting " + waitMs + "ms");
+                        // 分片睡眠：整段 sleep 会让停止生成最长 8 秒无响应
+                        long waitUntil = System.currentTimeMillis() + waitMs;
+                        try {
+                            while (!cancelled && System.currentTimeMillis() < waitUntil) {
+                                Thread.sleep(Math.min(200L, waitUntil - System.currentTimeMillis()));
+                            }
+                        } catch (InterruptedException ignored) {
+                        }
+                        continue;
+                    }
+                    throw last429;
+                }
+                // 参数不兼容只在 400/422 上降级：5xx 或网关错误页即使提到参数名也不该重发
+                boolean paramRejected = code == 400 || code == 422;
+                if (paramRejected && !temperatureDropped && detail.contains("temperature")) {
+                    temperatureDropped = true;
+                    request = withoutTemperature(request);
+                    PluginLog.info("[AIService] temperature rejected, retry without it");
+                    continue;
+                }
+                if (paramRejected && !completionTokensUsed && detail.contains("max_tokens")) {
+                    completionTokensUsed = true;
+                    request = withCompletionTokens(request);
+                    PluginLog.info("[AIService] max_tokens rejected, retry with max_completion_tokens");
+                    continue;
+                }
                 // 部分厂商直接拒绝 stream 参数：去掉后按整包响应重试一次
-                if (useStream && code >= 400 && code < 500 && code != 401 && code != 429) {
+                if (useStream && code >= 400 && code < 500) {
                     PluginLog.info("[AIService] stream rejected (HTTP " + code + "), fallback to non-stream");
                     useStream = false;
                     request = disableStream(request);
                     continue;
                 }
-                if (code == 401) {
-                    throw new RuntimeException("API Key 无效或已过期（HTTP 401）");
-                } else if (code == 429) {
-                    last429 = new RuntimeException("请求频率超限，请稍后重试（HTTP 429）");
-                    if (attempt < 3) {
-                        long waitMs = (long) Math.pow(2, attempt + 1) * 1000L;
-                        PluginLog.info("[AIService] 429 retry attempt=" + (attempt + 1) + "/3, waiting " + waitMs + "ms");
-                        try { Thread.sleep(waitMs); } catch (InterruptedException ignored) {}
-                        continue;
-                    }
-                    throw last429;
-                } else if (code >= 500) {
+                if (code >= 500) {
                     throw new RuntimeException("AI 服务端错误（HTTP " + code + "）: " + errorBody);
-                } else {
-                    throw new RuntimeException("API 请求失败（HTTP " + code + "）: " + errorBody);
                 }
+                throw new RuntimeException("API 请求失败（HTTP " + code + "）: " + errorBody);
             }
 
-            String contentType = conn.getContentType();
-            if (useStream && contentType != null
-                    && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/event-stream")) {
-                return readStreamingResponse(conn, onChunk);
+            // 流式判定不能只看 Content-Type：有的渠道标 application/json 却在发 SSE。
+            // 读到第一条有内容的行：SSE 字段开头就按 SSE 解析，否则把预读内容拼回整包 JSON
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            java.util.List<String> head = new java.util.ArrayList<>();
+            boolean sseResponse = false;
+            boolean sawContentLine = false;
+            String line;
+            while (head.size() < 64 && (line = reader.readLine()) != null) {
+                head.add(line);
+                String trimmed = line.trim();
+                // 心跳注释、空行、事件元数据都不是正文，继续往后找
+                if (trimmed.isEmpty() || trimmed.startsWith(":")) {
+                    continue;
+                }
+                if (trimmed.startsWith("event:") || trimmed.startsWith("id:")
+                        || trimmed.startsWith("retry:")) {
+                    continue;
+                }
+                sseResponse = trimmed.startsWith("data:");
+                sawContentLine = true;
+                break;
             }
-            // 厂商返回整包 JSON：自动降级，原有解析链路不变
-            return readStream(conn.getInputStream());
+            if (useStream && !sawContentLine && !head.isEmpty()) {
+                // 只有心跳/注释就结束了：按 SSE 继续读，解析器会跳过非 data 行
+                sseResponse = true;
+            }
+            if (useStream && sseResponse) {
+                return readStreamingResponse(conn, reader, head, onChunk, streamedVisible);
+            }
+            // 已确认是整包 JSON：放宽到整包超时，避免被流式的空闲上限掐断
+            conn.setReadTimeout(180000);
+            StringBuilder body = new StringBuilder();
+            try (BufferedReader r = reader) {
+                for (String h : head) {
+                    if (body.length() > 0) {
+                        body.append('\n');
+                    }
+                    body.append(h);
+                }
+                while ((line = r.readLine()) != null) {
+                    if (body.length() > 0) {
+                        body.append('\n');
+                    }
+                    body.append(line);
+                }
+            }
+            conn.disconnect();
+            return body.toString();
         }
         throw last429 != null ? last429 : new RuntimeException("API 请求失败");
     }
 
-    /** 逐行读 SSE，把 delta 累积成完整文本；合成与整包响应一致的 JSON 以复用 extractResponseText */
-    private String readStreamingResponse(HttpURLConnection conn,
-                                         java.util.function.Consumer<String> onChunk) throws Exception {
+    /** 逐行读 SSE，把 delta 累积成完整文本；合成与整包响应一致的 JSON 以复用 extractResponseText。
+     *  prefetched 是判定 SSE 时已经读掉的头部行，按顺序先消费再继续读流。 */
+    private String readStreamingResponse(HttpURLConnection conn, BufferedReader reader,
+                                         java.util.List<String> prefetched,
+                                         java.util.function.Consumer<String> onChunk,
+                                         java.util.concurrent.atomic.AtomicBoolean streamedVisible) throws Exception {
         StringBuilder accumulated = new StringBuilder();
         // 推理模型常把思考过程写进正文：先缓冲到正文锚点，避免前言流式刷屏。
         // accumulated 仍保留全文，最终文本由 stripPreamble / 后处理统一清洗
@@ -1232,16 +1318,26 @@ public class AIService {
         boolean[] doneReceived = {false};
         boolean[] interrupted = {false};
         boolean[] statusShown = {false};
-        long[] draftStartAt = {0L};
+        // 推理模型的思考过程走 reasoning_content，和正文不是一回事：
+        // 单独缓冲、只在完全没有正文时兜底当答案，绝不能拼进气泡
+        StringBuilder reasoning = new StringBuilder();
+        int reasoningHintLen = 0;
         String[] finishReason = {null};
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+        try (BufferedReader r = reader) {
+            java.util.Iterator<String> pre = prefetched.iterator();
             String line;
-            while (!cancelled && (line = reader.readLine()) != null) {
-                if (!line.startsWith("data:")) {
+            while (!cancelled) {
+                if (pre.hasNext()) {
+                    line = pre.next();
+                } else if ((line = r.readLine()) == null) {
+                    break;
+                }
+                // 判定侧用的是 trim 后的行，这里必须同口径：带前导空格的 data 行不能被跳过
+                String dataLine = line.stripLeading();
+                if (!dataLine.startsWith("data:")) {
                     continue;
                 }
-                String data = line.substring(5).trim();
+                String data = dataLine.substring(5).trim();
                 if ("[DONE]".equals(data)) {
                     doneReceived[0] = true;
                     break;
@@ -1253,7 +1349,20 @@ public class AIService {
                 if (fr != null) {
                     finishReason[0] = fr;
                 }
-                String chunk = parseDeltaContent(data);
+                // 思考与正文分开取：一行只解析一次 JSON，reasoning_content 不能当正文追加
+                String[] parts = parseDeltaParts(data);
+                String reasoningChunk = parts[1];
+                if (!reasoningChunk.isEmpty()) {
+                    reasoning.append(reasoningChunk);
+                    if (!visibleStarted[0] && onChunk != null
+                            && (reasoningHintLen == 0
+                            || reasoning.length() - reasoningHintLen >= 200)) {
+                        reasoningHintLen = reasoning.length();
+                        onChunk.accept(STREAM_HINT_PREFIX
+                                + "模型思考中…（已接收 " + reasoning.length() + " 字）");
+                    }
+                }
+                String chunk = parts[0];
                 if (chunk.isEmpty()) {
                     continue;
                 }
@@ -1262,38 +1371,15 @@ public class AIService {
                     pending.append(chunk);
                     int first = indexOfContentStart(pending);
                     if (first >= 0) {
-                        boolean summary = pending.indexOf(SUMMARY_ANCHOR) >= 0;
-                        int second = summary
-                                ? pending.indexOf(SUMMARY_ANCHOR, first + SUMMARY_ANCHOR.length())
-                                : -1;
-                        if (second >= 0) {
-                            // 定稿出现：第一版归入起草/思考阶段丢弃，只显示定稿
-                            visibleStarted[0] = true;
-                            if (onChunk != null) {
-                                onChunk.accept(STREAM_STATUS_PREFIX + pending.substring(second));
-                            }
-                        } else if (!summary) {
-                            // 自选分析 / 追问没有「定稿」概念，照常流式显示
-                            visibleStarted[0] = true;
-                            if (onChunk != null) {
-                                onChunk.accept(STREAM_HINT_PREFIX + pending.substring(first));
-                            }
-                        } else {
-                            // 速览第一版：先归到前置内容压住，只给等待提示
-                            if (draftStartAt[0] == 0L) {
-                                draftStartAt[0] = System.currentTimeMillis();
-                            }
-                            if (!statusShown[0] && onChunk != null) {
-                                statusShown[0] = true;
-                                onChunk.accept(STREAM_HINT_PREFIX + STREAM_THINKING_HINT);
-                            }
-                            // 观察窗内没等到定稿，说明模型只写了一版：按正文放行，
-                            // 避免正常回答也一直憋到流结束
-                            if (onChunk != null
-                                    && System.currentTimeMillis() - draftStartAt[0] > DRAFT_GRACE_MS) {
-                                visibleStarted[0] = true;
-                                onChunk.accept(STREAM_STATUS_PREFIX + pending.substring(first));
-                            }
+                        // 与自选分析一致：正文一到就灰色流式显示，只追加、不替换。
+                        // 生成期间保持弱化样式，finishStreaming 时统一切回正式气泡
+                        visibleStarted[0] = true;
+                        streamedVisible.set(true);
+                        if (onChunk != null) {
+                            // 首帧也过一遍行过滤，避免收尾 trimPreambleOnly 再删掉已显示的行
+                            String head = dropPreambleLines(pending.substring(first));
+                            onChunk.accept(STREAM_HINT_PREFIX
+                                    + (head.isEmpty() ? pending.substring(first) : head));
                         }
                     } else if (pending.length() >= PREAMBLE_FALLBACK_LIMIT && onChunk != null) {
                         if (isLikelyPreamble(pending)) {
@@ -1303,26 +1389,25 @@ public class AIService {
                                 onChunk.accept(STREAM_HINT_PREFIX + STREAM_THINKING_HINT);
                             }
                         } else {
-                            // 正常但不带锚点的回答（如自由追问）不能一直憋着
+                            // 正常但不带锚点的回答（如自由追问）不能一直憋着；
+                            // 仍用弱化样式，流结束后 finishStreaming 再转正式气泡
                             visibleStarted[0] = true;
-                            onChunk.accept(statusShown[0]
-                                    ? STREAM_STATUS_PREFIX + pending : pending.toString());
+                            streamedVisible.set(true);
+                            String head = dropPreambleLines(pending.toString());
+                            onChunk.accept(STREAM_HINT_PREFIX
+                                    + (head.isEmpty() ? pending.toString() : head));
                         }
                     }
                 } else if (onChunk != null) {
-                    // 放行之后仍按行挡一次：模型写到一半插入的英文自述、或「重新按格式写一遍」
+                    // 放行之后仍按行挡一次：模型写到一半插入的英文自述
                     // 不能原样进气泡。按行缓冲是因为 SSE chunk 可能把一句话切成两半
                     lineBuffer.append(chunk);
                     int nl;
                     while ((nl = lineBuffer.indexOf("\n")) >= 0) {
                         String oneLine = lineBuffer.substring(0, nl + 1);
                         lineBuffer.delete(0, nl + 1);
-                        int restart = oneLine.indexOf("【一句话综述】");
-                        if (restart >= 0) {
-                            // 模型把整份速览重写了一遍：从定稿起点清空气泡重来，
-                            // 夹在两遍之间的英文自述与草稿也随之消失
-                            onChunk.accept(STREAM_STATUS_PREFIX + oneLine.substring(restart));
-                        } else if (!isLikelyPreamble(oneLine)) {
+                        if (!isLikelyPreamble(oneLine)) {
+                            streamedVisible.set(true);
                             onChunk.accept(oneLine);
                         }
                     }
@@ -1332,34 +1417,59 @@ public class AIService {
             // 流式已吐出的内容必须保留，不能被整句超时提示替换掉
             PluginLog.info("[AIService] stream read timeout, kept partial_len=" + accumulated.length());
             interrupted[0] = true;
-            accumulated.append("\n\n").append(TIMEOUT_HINT);
+            if (accumulated.length() > 0) {
+                accumulated.append("\n\n").append(TIMEOUT_HINT);
+            } else {
+                // 正文没到：已接收的思考内容不能被一句超时顶掉
+                if (reasoning.length() > 0) {
+                    accumulated.append(reasoning).append("\n\n");
+                }
+                accumulated.append(TIMEOUT_HINT);
+            }
         } catch (java.io.IOException e) {
-            PluginLog.error("[AIService] stream read failed: " + e.getMessage(), e);
             interrupted[0] = true;
-            accumulated.append("\n\n（生成中断，以上为已生成内容）");
+            if (!cancelled) {
+                PluginLog.error("[AIService] stream read failed: " + e.getMessage(), e);
+                if (accumulated.length() == 0 && reasoning.length() > 0) {
+                    accumulated.append(reasoning);
+                }
+                accumulated.append("\n\n（生成中断，以上为已生成内容）");
+            }
         } finally {
             // 流结束或异常时把不足一行的剩余文本补出去，同样不收推理自述
             if (lineBuffer.length() > 0 && onChunk != null && !isLikelyPreamble(lineBuffer)) {
+                streamedVisible.set(true);
                 onChunk.accept(lineBuffer.toString());
             }
             conn.disconnect();
         }
+        if (accumulated.length() == 0 && reasoning.length() > 0) {
+            // 个别渠道（如商汤 reasoning 模型）把答案放在 reasoning 字段：
+            // 流式期间无法区分，收尾时按正文规则处理
+            accumulated.append(reasoning);
+            pending.append(reasoning);
+        }
         if (!visibleStarted[0] && pending.length() > 0 && onChunk != null) {
-            // 整段都被压住（速览第一版没等到定稿、或全程只有思考过程）：
-            // 交最终清洗统一收敛，避免把草稿和英文自述一起倒进气泡
+            // 全程没等到正文锚点（只有思考过程或自由追问的短回答）：
+            // 交最终清洗统一收敛，避免把英文自述倒进气泡
             String cleaned = stripPreamble(pending.toString());
             if (!cleaned.isEmpty()) {
                 onChunk.accept(STREAM_STATUS_PREFIX + cleaned);
             }
         }
         if (cancelled) {
-            accumulated.append("\n\n（已停止生成，以上为已生成内容）");
+            if (accumulated.length() > 0) {
+                accumulated.append("\n\n");
+            }
+            accumulated.append("（已停止生成，以上为已生成内容）");
         } else if (!interrupted[0]) {
             // 异常分支已各自带提示；这里是「看似正常收尾、实则没写完」的两种情况
             if ("length".equalsIgnoreCase(finishReason[0])) {
                 // 思考过程与正文共用 max_tokens，正文常被挤到一半就撞上限，必须让用户看见
                 accumulated.append("\n\n（本次生成因模型输出长度上限被截断，可重试或减少快讯条数）");
-            } else if (!doneReceived[0]) {
+            } else if (!doneReceived[0] && finishReason[0] == null) {
+                // 有 finish_reason（如 stop）说明服务端已正常收尾，只是没发 [DONE]，
+                // 不能当成中断再补一句「生成不完整」
                 accumulated.append("\n\n（连接提前结束，本次生成不完整，请重试）");
             }
         }
@@ -1376,21 +1486,18 @@ public class AIService {
 
     /** 前言过滤的兜底字符数：超过仍未找到正文锚点、且不像推理自述时才直接显示，避免干等 */
     private static final int PREAMBLE_FALLBACK_LIMIT = 200;
-    /** onChunk 以此开头表示「整段替换气泡」而非追加，用于等待占位与正文替换 */
+    /** onChunk 以此开头表示「整段替换气泡」而非追加；仅用于流结束时的兜底放行 */
     public static final String STREAM_STATUS_PREFIX = "\u0000";
-    /** onChunk 以此开头表示「草稿/等待阶段」，用弱化样式整段替换，与定稿气泡区分。
-     *  推理模型常先写一版完整草稿、自查后再写定稿；第一版先弱化显示，检测定稿时再换正式样式 */
+    /** onChunk 以此开头表示「生成中」，用弱化样式显示；finishStreaming 时切回正式气泡 */
     public static final String STREAM_HINT_PREFIX = "\u0001";
     /** 等待占位只描述「正在收数据、正文还没到」，不承诺已隐藏思考过程：
      *  过滤是启发式的，历史上有漏放行，写成「已隐藏」是过度承诺 */
     private static final String STREAM_THINKING_HINT =
             "正在接收模型输出，等待正文段落…";
-    /** 速览的答案起点；模型自查后重写时会再次出现，据此判定第一版是草稿 */
-    private static final String SUMMARY_ANCHOR = "【一句话综述】";
-    /** 第一版压住的观察窗：窗内没等到定稿就按正文放行，避免正常回答也憋到流结束 */
-    private static final long DRAFT_GRACE_MS = 5000L;
+    /** 请求发出后立即显示，避免渠道整包返回 / 思考期长时界面纯空白 */
+    private static final String STREAM_WAITING_HINT = "正在等待模型响应…";
     /** 整段都是推理自述、没有任何正文锚点时的兜底提示 */
-    private static final String INVALID_CONTENT_HINT = "（本次未返回有效分析内容，请重试或更换模型）";
+    static final String INVALID_CONTENT_HINT = "（本次未返回有效分析内容，请重试或更换模型）";
 
     /** 判断一段文字是不是推理模型关于「怎么作答」的自述，而不是正文。
      *  只用于流式首帧与中途行的显示过滤，不改动 accumulated / 最终文本。 */
@@ -1462,26 +1569,66 @@ public class AIService {
         }
     }
 
-    /** 从一条 SSE data 提取增量文本；纯静态方法，便于单测 */
-    static String parseDeltaContent(String data) {
+    /** 一次解析同时取正文与思考增量，返回 {content, reasoning}（流式下每块都要用，避免重复解析）。
+     *  兼容三类结构：标准 delta、部分渠道的 message 块、旧 completions 的 choices[0].text；
+     *  content 还可能是多模态数组（[{type:"text",text:"..."}]）。 */
+    static String[] parseDeltaParts(String data) {
         try {
             JsonObject obj = JsonParser.parseString(data).getAsJsonObject();
             JsonArray choices = obj.getAsJsonArray("choices");
             if (choices == null || choices.size() == 0) {
-                return "";
+                return NO_DELTA;
             }
-            JsonObject delta = choices.get(0).getAsJsonObject().getAsJsonObject("delta");
-            if (delta == null) {
-                return "";
+            JsonObject choice = choices.get(0).getAsJsonObject();
+            JsonObject carrier;
+            if (choice.has("delta") && choice.get("delta").isJsonObject()) {
+                carrier = choice.getAsJsonObject("delta");
+            } else if (choice.has("message") && choice.get("message").isJsonObject()) {
+                carrier = choice.getAsJsonObject("message");
+            } else {
+                carrier = choice;
             }
-            if (delta.has("content") && !delta.get("content").isJsonNull()) {
-                return delta.get("content").getAsString();
+            String content = deltaText(carrier, "content");
+            if (content.isEmpty()) {
+                content = deltaText(carrier, "text");
             }
-            if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
-                return delta.get("reasoning_content").getAsString();
+            String reasoning = deltaText(carrier, "reasoning_content");
+            if (reasoning.isEmpty()) {
+                reasoning = deltaText(carrier, "reasoning");
             }
+            if (content.isEmpty() && reasoning.isEmpty()) {
+                return NO_DELTA;
+            }
+            return new String[]{content, reasoning};
         } catch (Exception ignored) {
             // 单行解析失败不影响后续块
+        }
+        return NO_DELTA;
+    }
+
+    private static final String[] NO_DELTA = {"", ""};
+
+    private static String deltaText(JsonObject carrier, String field) {
+        JsonElement value = carrier.get(field);
+        if (value == null || value.isJsonNull()) {
+            return "";
+        }
+        if (value.isJsonPrimitive()) {
+            return value.getAsString();
+        }
+        if (value.isJsonArray()) {
+            StringBuilder out = new StringBuilder();
+            for (JsonElement part : value.getAsJsonArray()) {
+                if (part.isJsonObject()) {
+                    JsonObject p = part.getAsJsonObject();
+                    if (p.has("text") && p.get("text").isJsonPrimitive()) {
+                        out.append(p.get("text").getAsString());
+                    }
+                } else if (part.isJsonPrimitive()) {
+                    out.append(part.getAsString());
+                }
+            }
+            return out.toString();
         }
         return "";
     }
@@ -1491,6 +1638,31 @@ public class AIService {
         try {
             JsonObject obj = JsonParser.parseString(request).getAsJsonObject();
             obj.remove("stream");
+            return gson.toJson(obj);
+        } catch (Exception e) {
+            return request;
+        }
+    }
+
+    /** 去掉 temperature：部分推理模型不接受自定义采样温度 */
+    private String withoutTemperature(String request) {
+        try {
+            JsonObject obj = JsonParser.parseString(request).getAsJsonObject();
+            obj.remove("temperature");
+            return gson.toJson(obj);
+        } catch (Exception e) {
+            return request;
+        }
+    }
+
+    /** max_tokens 改名为 max_completion_tokens：部分厂商只认后者 */
+    private String withCompletionTokens(String request) {
+        try {
+            JsonObject obj = JsonParser.parseString(request).getAsJsonObject();
+            JsonElement value = obj.remove("max_tokens");
+            if (value != null) {
+                obj.add("max_completion_tokens", value);
+            }
             return gson.toJson(obj);
         } catch (Exception e) {
             return request;
@@ -1583,6 +1755,53 @@ public class AIService {
         }
         // 整段都没有正文锚点且明显是推理自述：不要原样回显给用户
         return isLikelyPreamble(text) ? INVALID_CONTENT_HINT : text;
+    }
+
+    /** 流式已把正文完整追加到气泡里，收尾只丢弃开头前言与夹在中间的推理自述，
+     *  不按「最后一份」重排：重排会把用户已经看到的内容从气泡里抹掉，
+     *  与「只追加不替换」相冲突。 */
+    static String trimPreambleOnly(String text) {
+        if (text == null) {
+            return "";
+        }
+        int start = indexOfContentStart(text);
+        if (start < 0) {
+            return isLikelyPreamble(text) ? INVALID_CONTENT_HINT : text;
+        }
+        String rest = start > 0 ? text.substring(start) : text;
+        if (start > 0 && rest.length() < 20) {
+            return text;
+        }
+        String out = dropPreambleLines(rest);
+        int end = out.length();
+        while (end > 1 && out.charAt(end - 1) == '\n' && out.charAt(end - 2) == '\n') {
+            end--;
+        }
+        out = end == out.length() ? out : out.substring(0, end);
+        return out.isEmpty() ? rest : out;
+    }
+
+    /** 按行丢弃推理自述，保留原有行边界；流式显示与收尾清洗共用，
+     *  避免「首帧显示了某行、收尾又被删掉」的不一致。 */
+    static String dropPreambleLines(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        int from = 0;
+        while (from < text.length()) {
+            int nl = text.indexOf('\n', from);
+            int end = nl < 0 ? text.length() : nl;
+            String line = text.substring(from, end);
+            if (!isLikelyPreamble(line)) {
+                out.append(line);
+                if (nl >= 0) {
+                    out.append('\n');
+                }
+            }
+            if (nl < 0) {
+                break;
+            }
+            from = nl + 1;
+        }
+        return out.toString();
     }
 
     /** 去除 markdown 格式符号 */

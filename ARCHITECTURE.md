@@ -31,7 +31,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 - **KuaixunPanel**：
   - 单一 1 秒 tick 的 Swing Timer 驱动倒计时和触发刷新（20 秒间隔），避免两个 timer 不同步；状态栏文案由 `setStatus`/`updateCountdownDisplay` 维护。
   - 手动刷新 `refreshData()` 清空重建；自动刷新 `doCheckNewData()` 用 SwingWorker 增量插入：按 `knownIds` 去重、逆序插到顶部，并做滚动位置补偿（保存视口 y → 插入卡片 → 布局完成后累加插入高度回写视口位置），刷新期间所有卡片 alpha 半透明闪烁。
-  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。卡片顶行右侧有「AI 解读」按钮，点击调 `WatchlistPanel.openNewsInterpretation`：后台批量拉一次自选行情拼出"名称(代码)"清单，连同快讯标题/摘要以 `NEWS_INTERPRET_PROMPT` 在 AI 对话框首发提问，解读结果可继续追问（复用自选分析的聊天框，发送逻辑经 rootPane clientProperty 的 `sendMessage` 暴露）。
+  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。卡片顶行右侧有「AI 解读」按钮，点击调 `WatchlistPanel.openNewsInterpretation`：后台批量拉一次自选行情拼出"名称(代码)"清单，连同快讯标题/摘要以 `NEWS_INTERPRET_PROMPT` 在 AI 会话页签首发提问，解读结果可继续追问（复用自选分析的面板与发送逻辑）。同一会话按新闻标题归属，点另一条快讯会重建会话，不复用上一条的追问上下文。
 
 ## 行情模块
 
@@ -74,7 +74,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 `AIService` 不再维护运行时厂商 / 模型注册表。`PRESETS` 仅作为「新建配置」时的一键填充模板（商汤 SenseNova、智谱 GLM 常用模型 + 空白配置），每项含接口地址、模型 ID、采样温度与是否附加 `reasoning_effort=none`。
 
-实际生效的数据是 `AiProfile`（id、名称、BaseURL、模型 ID、temperature、reasoningEffortNone、registerUrl、legacyKeySlot）：列表以 JSON 存应用级 `finance.ai.profiles`，启用项存 `finance.ai.profile`。每份配置的 Key 按 `profile:<id>` 凭据槽单独存 PasswordSafe，互不覆盖。`AIService(apiKey, AiProfile)` 按配置构造——BaseURL 经 `normalizeBaseUrl` 规范化并自动补全 `/chat/completions`，采样参数取实例字段；旧的两参 / 三参构造器降级为兼容适配。
+实际生效的数据是 `AiProfile`（id、名称、BaseURL、模型 ID、temperature、reasoningEffortNone、registerUrl、legacyKeySlot）：列表以 JSON 存应用级 `finance.ai.profiles`，启用项存 `finance.ai.profile`。每份配置的 Key 按 `profile:<id>` 凭据槽单独存 PasswordSafe，互不覆盖。`AIService(apiKey, AiProfile)` 按配置构造——BaseURL 经 `normalizeBaseUrl` 规范化并自动补全 `/chat/completions`，采样参数取实例字段。
 
 旧版迁移 `migrateLegacyProfiles` 在首次读取时把 `finance.ai.custom.*` 与 `finance.ai.model` 转成配置列表，旧 Key 只记录原槽位，由 `migrateProfileKey` 在后台首次读 Key 时懒迁移，避免升级启动同步访问钥匙串卡住 EDT。
 
@@ -86,14 +86,15 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ### 分析上下文构建（buildMarketContext）
 
-上下文头部含“数据时间”（北京时间）与“市场状态”——`sessionStatus` 按 code 所属市场算出子状态（盘前/集合竞价/开盘准备/盘中(早盘/午盘)/午间休市/盘后/夜盘；美股换算美东自动处理夏令时；伦敦金周一 07:00 至周六 04:00 视为交易中，节假日未覆盖）。每股输出开高低收、振幅、日内位置、距开盘涨幅、开盘缺口及 K 线实体/影线比例；阳线/阴线/十字星以“现价 vs 昨收”判定并与涨跌幅符号保持一致。有均线数据的股票附均线行。
+上下文头部含“数据时间”（北京时间）与“市场状态”——`sessionStatus` 按 code 所属市场算出子状态（盘前/集合竞价/开盘准备/盘中(早盘/午盘)/午间休市/盘后/夜盘；美股换算美东自动处理夏令时；伦敦金开收市时间随伦敦夏令时平移——冬令时北京时间周一 07:00 开、周六 06:00 收，夏令时各提前 1 小时；节假日未覆盖）。每股输出开高低收、振幅、日内位置、距开盘涨幅、开盘缺口及 K 线实体/影线比例；阳线/阴线/十字星以“现价 vs 昨收”判定并与涨跌幅符号保持一致。有均线数据的股票附均线行。
 
 ### 调用链
 
 - **首轮分析** `analyzeWatchlistAsync`：后台拉均线（失败降级无均线）→ 构建上下文 → 以 `ANALYSIS_SYSTEM_PROMPT` 调模型 → `enforceConsistency` 后处理。
 - **追问聊天** `chatAsync`：对话历史按下标定角色（偶数位 user、奇数位 assistant），先做 snapshot 防并发修改，再注入基线后发整段 messages。
-- **HTTP 层** `callAPI`：temperature 与 `reasoning_effort` 由当前配置的实例字段决定（默认 0.3；kimi-k3 预设为 1，商汤预设附加 `reasoning_effort=none`），max_tokens 8000（思考过程与正文共用预算，避免正文被挤断）；401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出。
+- **HTTP 层** `callAPI`：temperature 与 `reasoning_effort` 由当前配置的实例字段决定（默认 0.3；kimi-k3 预设为 1，商汤预设附加 `reasoning_effort=none`），max_tokens 8000（思考过程与正文共用预算，避免正文被挤断）；超时分级——连接 10s、流式空闲 120s、整包 180s。401 报 Key 失效、429 指数退避重试最多 3 次、5xx 带错误体抛出；参数降级只在 400/422 上生效（400 按错误内容去掉 `temperature`、`max_tokens` 改 `max_completion_tokens`、或去掉 `stream` 改走整包），401/429/5xx 不会被错误体里的参数名带偏。流式判定不依赖 Content-Type：预读时跳过心跳注释与 `event:` 元数据，按第一条有内容的行是否以 `data:` 开头决定（兼容标成 `application/json` 却发 SSE 的渠道）；`cancel()` 会直接断开当前连接，不必等读超时。
 - **解析** `extractResponseText`：依次尝试 `choices[0].message.content` → `reasoning_content` → `reasoning`；无法识别的结构只写日志、不把原文回显给用户（防敏感信息泄露）。输出统一过 `stripMarkdown` 去除 markdown 符号以适配 Swing 纯文本气泡。
+- **流式增量** `parseDeltaParts`：一行 SSE 只解析一次 JSON，同时取出正文与思考增量（`delta.content` / `delta.reasoning_content`，个别渠道为 `reasoning`）。思考过程单独缓冲、不进气泡，等待期间只显示「模型思考中…（已接收 N 字）」；只有整条流完全没有正文时（如商汤 reasoning 模型把答案放在 reasoning 字段），才在收尾时把 reasoning 当正文处理，读超时也一样保留已接收的 reasoning 而不是只剩一句超时提示。
 
 ### 输出确定性与跨轮一致性
 
@@ -102,11 +103,12 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ## 设置入口与对话框
 
-- **AISettingsPanel**：多配置表单（配置下拉 + 新建/删除、名称/地址/模型/Key 编辑、测试连接），由 `AISettingsDialog`（工具窗口标题栏齿轮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。切换配置时表单值写回上一份、Key 异步回填且互不覆盖；测试连接期间按钮禁用并显示耗时进度，结束就地回显结果。
+- **AISettingsPanel**：多配置表单（配置下拉 + 新建/删除、名称/地址/模型/Key 编辑、测试连接），由 `AISettingsDialog`（工具窗口标题栏齿轮的一键入口，已打开则置前防重复弹窗）与 `AISettingsConfigurable`（IDE 设置页，Settings → Tools → Finance 7x24 News AI，applicationConfigurable）共用。切换配置时表单值写回上一份、Key 异步回填且互不覆盖；只有用户真正编辑过的 Key 才回写，避免异步回填未完成时把空串当成「清空 Key」落盘；测试连接期间按钮禁用并显示耗时进度，结束就地回显结果。
 - **AISettingsDialog**：薄壳对话框，只负责窗口尺寸/居中与取消/保存按钮；保存前统一校验所有配置的地址/模型/名称，再整体落盘。
 - **AISettingsConfigurable**：标准 Configurable 生命周期（isModified/apply/reset）；`isModified` 用面板快照 `getSnapshot()` 比较，快照不含异步回填的 Key 值，避免钥匙串首访导致误判或阻塞设置页。保存后工具窗口下次进入 AI 入口时经 `refreshAiConfigFromStorage` 重读配置。
-- **AI 对话框**（内嵌于 WatchlistPanel）：聊天气泡改为自绘圆角面板（不再拼 HTML），主题色取 `JBColor`；跨组件引用（loadingPanel / appendMessage / sendMessage / sendMessageSilent / setRequesting 等回调）挂 rootPane clientProperty 传递。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。Esc 收起（`setVisible(false)`）保留会话、再点同一入口恢复；标题栏关闭按钮仍为 `DISPOSE_ON_CLOSE`，可彻底重开一轮。三类会话按入口分别存在 `aiDialogs` 里互不串台，收起期间的流式回调改用 `isDisplayable()` 判断继续写入；生成期间发送按钮切换为「停止」。AI 气泡撑满可用宽度，用户气泡右对齐自适应；等待/思考/第一版草稿经 `STREAM_HINT_PREFIX` 以灰字斜体、无底框的弱化样式显示，定稿由 `STREAM_STATUS_PREFIX` 切回正式气泡。
-- **标题栏入口** `AiQuickActions` / `ShowAiSettingsAction`：通过 `toolWindow.setTitleActions` 注册，Action 从 ToolWindow Content 反查 `KuaixunPanel` 再触发对应入口，快讯 / 自选任意页签下都能一键直达。
+- **AI 会话面板** `AiChatPanel`：作为工具窗口内的页签承载，不再弹独立 JDialog。聊天气泡为自绘圆角面板（不拼 HTML），主题色取 `JBColor`；气泡宽度按页签实际宽度自适应并随窗口缩放重排。发送失败会向 history 补一条 assistant 占位符，维持偶 user/奇 assistant 交替——这是 `chatAsync` 下标定角色机制的前提。三类会话（选股分析 / 速览 / 快讯解读）各占一个页签，页签标题带关闭按钮：关闭即 `disposeSession`（中止进行中的请求并标记失效），再次点入口是全新一轮；会话仍在时点入口只切页签，气泡与 history 原样保留。页签关闭期间的流式回调由 `disposed` 标志兜底跳过。生成期间发送按钮切换为「停止」。请求发出即显示「正在等待模型响应…」占位，思考过程（`reasoning_content`）不进入气泡、只显示「模型思考中…（已接收 N 字）」；正文一到即经 `STREAM_HINT_PREFIX` 以灰字斜体、无底框的弱化样式**只追加**显示，不压草稿、不中途整段替换；流结束时 `finishStreaming` 切回正式气泡，最终文本只丢弃开头前言与夹在中间的推理自述，不再按「最后一份」重排（流式已显示过的内容不会被抹掉）。快讯解读会话按新闻标题归属，换一条快讯会重建会话。
+- **会话宿主** `AiSessionHost`（由 `KuaixunPanel` 实现）：把 AI 面板挂到「快讯 / 自选」同一组内层页签上；页签切换驱动两侧行情轮询的启停，打开 AI 会话时会 `toolWindow.activate` 把收起的工具窗口唤回前台。
+- **标题栏入口** `AiQuickActions` / `ShowAiSettingsAction`：通过 `toolWindow.setTitleActions` 注册，Action 从 ToolWindow Content 反查 `KuaixunPanel` 再触发对应入口，快讯 / 自选 / AI 任意页签下都能一键直达。
 
 ## 线程模型
 

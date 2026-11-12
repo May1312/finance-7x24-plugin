@@ -66,10 +66,10 @@ public final class AiQuickActions {
         }
     }
 
-    /** AI 选股分析：按自选页当前市场筛选分析自选股 */
+    /** AI复盘：按自选页当前市场筛选分析自选股 */
     public static class StockAnalysis extends BaseAction {
         public StockAnalysis() {
-            super("AI选股分析", "AI 分析自选股行情，可在对话框中继续追问",
+            super("AI复盘", "AI 分析自选股行情，可在对话框中继续追问",
                     AllIcons.Actions.IntentionBulb, KuaixunPanel::openAiStockAnalysis);
         }
 

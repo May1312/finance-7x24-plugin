@@ -16,7 +16,6 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
-import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.text.Collator;
@@ -53,12 +52,10 @@ public class WatchlistPanel extends JPanel {
     private static final List<String> INDEX_CODES_HK = List.of("hkHSI", "hkHSTECH");
     private static final List<String> INDEX_CODES_US = List.of("usDJI", "usIXIC", "usINX");
     private static final List<String> INDEX_CODES_GOLD = List.of("xau", "gc", "xag", "si");
-    /** 追问失败时写入 history 的 assistant 占位，保持 user/assistant 严格交替 */
-    private static final String AI_FAILED_PLACEHOLDER = "（本轮回答失败，无结论）";
-    /** 三类 AI 会话各自独立保存，收起后按入口恢复 */
-    private static final String AI_DIALOG_ANALYSIS = "analysis";
-    private static final String AI_DIALOG_SUMMARY = "summary";
-    private static final String AI_DIALOG_INTERPRETATION = "interpretation";
+    /** 三类 AI 会话各自独立保存，关闭页签后按入口重开 */
+    private static final String AI_SESSION_ANALYSIS = "analysis";
+    private static final String AI_SESSION_SUMMARY = "summary";
+    private static final String AI_SESSION_INTERPRETATION = "interpretation";
 
     private enum MarketFilter {
         A("A股"), HK("港股"), US("美股"), GOLD("黄金");
@@ -73,8 +70,10 @@ public class WatchlistPanel extends JPanel {
     private final DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
     private String currentApiKey = "";
     private String currentProfileId = "";
-    /** 每个入口一份会话窗口：收起（隐藏）后仍保留 history 与气泡，再点同一入口原样恢复 */
-    private final Map<String, JDialog> aiDialogs = new HashMap<>();
+    /** AI 会话页签的宿主：由外层 KuaixunPanel 注入，未挂载时 AI 入口不可用 */
+    private AiSessionHost aiSessionHost;
+    /** 快讯解读会话当前对应的话题；切换新闻时重建会话，不能沿用上一条的上下文 */
+    private String interpretationTitle = null;
     private AISettingsDialog settingsDialog;
 
     private final DefaultTableModel tableModel = new DefaultTableModel(COLUMN_NAMES, 0) {
@@ -685,13 +684,18 @@ public class WatchlistPanel extends JPanel {
                 SwingUtilities.invokeLater(() -> currentApiKey = key));
     }
 
-    /** 保存后的内存同步：配置列表与各份 Key 已由设置面板落盘，这里不再重复写 */
+    /** 保存后的内存同步：配置列表与各份 Key 已由设置面板落盘，这里不再重复写。
+     *  同一配置下的空 Key 可能只是异步回填没完成，保留现值；
+     *  切换配置时以新配置为准，避免把旧 Key 发到新地址。 */
     private void saveAiConfig(String newKey, String newProfileId) {
         if (newProfileId == null || newProfileId.isEmpty()) {
             return;
         }
+        boolean switched = !newProfileId.equals(currentProfileId);
         currentProfileId = newProfileId;
-        currentApiKey = newKey;
+        if (!newKey.isEmpty() || switched) {
+            currentApiKey = newKey;
+        }
     }
 
     /** 从应用级配置刷新启用项（设置页可能被修改过），Key 异步刷新并返回给需要的调用方。
@@ -724,71 +728,78 @@ public class WatchlistPanel extends JPanel {
         }
     }
 
-    /** 恢复某入口的会话窗口：窗口只是被收起（隐藏）时重新显示，气泡与 history 原样保留。
-     *  JDialog 没有 Frame.ICONIFIED 最小化态，故用 isDisplayable 而非 isVisible 判断会话是否还在。 */
-    private boolean restoreAiDialog(String key) {
-        JDialog dialog = aiDialogs.get(key);
-        if (dialog == null || !dialog.isDisplayable()) {
+    /** 恢复某入口的会话：页签还在就切过去，气泡与 history 原样保留 */
+    private boolean restoreAiSession(String key) {
+        if (aiSessionHost == null) {
             return false;
         }
-        if (!dialog.isVisible()) {
-            dialog.setVisible(true);
+        AiChatPanel session = aiSessionHost.findAiSession(key);
+        if (session == null) {
+            return false;
         }
-        dialog.toFront();
-        dialog.requestFocus();
+        aiSessionHost.selectAiSession(session);
         return true;
     }
 
-    /** 新建会话窗口并登记到对应入口；Esc 收起后仍可从同一入口恢复 */
-    private JDialog openAiDialog(String key, String title, String systemPrompt,
-                                 java.util.List<String> history) {
-        JDialog dialog = buildAiChatDialog(title, systemPrompt, history);
-        aiDialogs.put(key, dialog);
-        return dialog;
+    /** 新建会话页签并登记到对应入口；按当前配置构造 AIService，Key 在发送时读取 */
+    private AiChatPanel openAiSession(String key, String title, String systemPrompt) {
+        AiChatPanel session = new AiChatPanel(systemPrompt, () -> createAiService(currentApiKey));
+        aiSessionHost.addAiSession(key, title, session);
+        return session;
+    }
+
+    public void setAiSessionHost(AiSessionHost host) {
+        this.aiSessionHost = host;
     }
 
     public void showAiAnalysis() {
         PluginLog.info("[WatchlistPanel] showAiAnalysis called");
-        refreshAiConfigFromStorage();
-        if (restoreAiDialog(AI_DIALOG_ANALYSIS)) {
-            PluginLog.info("[WatchlistPanel] analysis dialog restored");
+        if (aiSessionHost == null) {
             return;
         }
-        PluginLog.info("[WatchlistPanel] currentApiKey=" + (currentApiKey != null ? "len=" + currentApiKey.length() : "null"));
-        if (currentApiKey.isEmpty()) {
-            PluginLog.info("[WatchlistPanel] no apiKey, opening settings dialog");
-            showAiSettings();
-            if (currentApiKey.isEmpty()) {
-                PluginLog.info("[WatchlistPanel] settings dialog cancelled");
-                return;
-            }
-        }
+        // 必须等 Key 真正读完再判断：首次点击时 currentApiKey 还没回填，
+        // 同步读取会误判为空并多弹一次设置框
+        refreshAiConfigFromStorage().exceptionally(e -> "").thenAccept(key ->
+                SwingUtilities.invokeLater(() -> {
+                    if (restoreAiSession(AI_SESSION_ANALYSIS)) {
+                        PluginLog.info("[WatchlistPanel] analysis session restored");
+                        return;
+                    }
+                    if (currentApiKey.isEmpty()) {
+                        PluginLog.info("[WatchlistPanel] no apiKey, opening settings dialog");
+                        showAiSettings();
+                        if (currentApiKey.isEmpty()) {
+                            PluginLog.info("[WatchlistPanel] settings dialog cancelled");
+                            return;
+                        }
+                    }
 
-        List<String> codes = getFilteredCodes();
-        PluginLog.info("[WatchlistPanel] filtered codes count=" + codes.size());
-        if (codes.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "当前市场暂无自选股，请先添加...", "提示", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
+                    List<String> codes = getFilteredCodes();
+                    PluginLog.info("[WatchlistPanel] filtered codes count=" + codes.size());
+                    if (codes.isEmpty()) {
+                        JOptionPane.showMessageDialog(this, "当前市场暂无自选股，请先添加...", "提示", JOptionPane.WARNING_MESSAGE);
+                        return;
+                    }
 
-        final String marketName = currentFilter.getDisplayName();
-        final String systemPrompt = AIService.ANALYSIS_SYSTEM_PROMPT;
-        java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
-
-        JDialog dialog = openAiDialog(AI_DIALOG_ANALYSIS, "AI选股分析", systemPrompt, history);
-        PluginLog.info("[WatchlistPanel] dialog built, calling runAiAutoAnalysis");
-        runAiAutoAnalysis(marketName, history, dialog);
+                    final String marketName = currentFilter.getDisplayName();
+                    AiChatPanel session = openAiSession(
+                            AI_SESSION_ANALYSIS, "AI复盘", AIService.ANALYSIS_SYSTEM_PROMPT);
+                    PluginLog.info("[WatchlistPanel] analysis session built, calling runAiAutoAnalysis");
+                    runAiAutoAnalysis(marketName, session);
+                }));
     }
 
-    /** 最近要闻速览入口：把最新一批快讯注入 system prompt，复用 AI 对话框生成汇总，可继续追问。
+    /** 最近要闻速览入口：把最新一批快讯注入 system prompt，复用 AI 会话生成汇总，可继续追问。
      *  清单不进入用户气泡，避免 30 条快讯刷屏；Key 就绪后才决定是否需要弹设置框。 */
-    @SuppressWarnings("unchecked")
     public void openNewsSummary(List<KuaixunItem> items) {
+        if (aiSessionHost == null) {
+            return;
+        }
         if (items == null || items.isEmpty()) {
             JOptionPane.showMessageDialog(this, "快讯尚未加载完成，请稍后重试", "提示", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        if (restoreAiDialog(AI_DIALOG_SUMMARY)) {
+        if (restoreAiSession(AI_SESSION_SUMMARY)) {
             return;
         }
         final String context = AIService.buildSummaryContext(items);
@@ -804,51 +815,35 @@ public class WatchlistPanel extends JPanel {
 
         refreshAiConfigFromStorage().exceptionally(e -> "").thenAccept(key ->
                 SwingUtilities.invokeLater(() -> {
-                    currentApiKey = key;
-                    if (key.isEmpty()) {
+                    if (currentApiKey.isEmpty()) {
                         showAiSettings();
                         if (currentApiKey.isEmpty()) {
                             return;
                         }
                     }
-                    if (restoreAiDialog(AI_DIALOG_SUMMARY)) {
+                    if (restoreAiSession(AI_SESSION_SUMMARY)) {
                         return;
                     }
-                    java.util.List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
-                    JDialog dialog = openAiDialog(AI_DIALOG_SUMMARY, "AI速览", systemPrompt, history);
-                    JComponent loading = (JComponent) dialog.getRootPane().getClientProperty("loadingPanel");
-                    JLabel loadingLabel = (JLabel) dialog.getRootPane().getClientProperty("loadingLabel");
-                    if (loading != null && loadingLabel != null) {
-                        // 与自选分析一致的等待计时：请求结束后 loadingPanel 被隐藏，下一次 tick 自停
-                        // 计时文案显示真实汇总条数，别再写原始列表长度（之前会虚报成 50 条）
-                        final int newsCount = Math.min(items.size(), AIService.SUMMARY_MAX_ITEMS);
-                        final long startAt = System.currentTimeMillis();
-                        final Timer waitTimer = new Timer(1000, ev -> {
-                            if (!loading.isVisible()) {
-                                ((Timer) ev.getSource()).stop();
-                                return;
-                            }
-                            long sec = (System.currentTimeMillis() - startAt) / 1000;
-                            loadingLabel.setText("正在汇总 " + newsCount + " 条快讯... 已等待 " + sec + " 秒");
-                        });
-                        loadingLabel.setText("正在汇总 " + newsCount + " 条快讯...");
-                        loading.setVisible(true);
-                        waitTimer.start();
-                    }
+                    AiChatPanel session = openAiSession(AI_SESSION_SUMMARY, "AI速览", systemPrompt);
+                    // 计时文案显示真实汇总条数，别再写原始列表长度（之前会虚报成 50 条）
+                    int newsCount = Math.min(items.size(), AIService.SUMMARY_MAX_ITEMS);
+                    session.startLoading("正在汇总 " + newsCount + " 条快讯...");
                     // 指令只发给模型，不展示成用户气泡（与自选分析一致）
-                    Object send = dialog.getRootPane().getClientProperty("sendMessageSilent");
-                    if (send instanceof java.util.function.Consumer) {
-                        ((java.util.function.Consumer<Object>) send).accept(firstMessage);
-                    }
+                    session.sendSilent(firstMessage);
                 }));
     }
 
-    /** 快讯 AI 解读入口：后台补齐自选股名称后，在 AI 对话框发起解读，可继续追问 */
-    @SuppressWarnings("unchecked")
+    /** 快讯 AI 解读入口：后台补齐自选股名称后，在 AI 会话里发起解读，可继续追问 */
     public void openNewsInterpretation(String newsTitle, String newsDigest) {
         PluginLog.info("[WatchlistPanel] openNewsInterpretation: " + newsTitle);
-        refreshAiConfigFromStorage();
-        if (restoreAiDialog(AI_DIALOG_INTERPRETATION)) {
+        // 与自选分析同样等 Key 就绪，避免第一次点击误判为空
+        refreshAiConfigFromStorage().exceptionally(e -> "").thenAccept(key ->
+                SwingUtilities.invokeLater(() -> openNewsInterpretationReady(
+                        newsTitle, newsDigest)));
+    }
+
+    private void openNewsInterpretationReady(String newsTitle, String newsDigest) {
+        if (aiSessionHost == null) {
             return;
         }
         if (currentApiKey.isEmpty()) {
@@ -858,6 +853,13 @@ public class WatchlistPanel extends JPanel {
             }
         }
         final String title = newsTitle == null ? "" : newsTitle;
+        if (!title.equals(interpretationTitle)) {
+            // 换了一条新闻：上一条的 history 与气泡不能复用，直接丢弃旧会话
+            aiSessionHost.closeAiSession(AI_SESSION_INTERPRETATION);
+            interpretationTitle = title;
+        } else if (restoreAiSession(AI_SESSION_INTERPRETATION)) {
+            return;
+        }
         final String digest = newsDigest == null ? "" : newsDigest;
         new Thread(() -> {
             // 自选清单带上名称，AI 才能按行业/主题做关联（一次批量行情请求，失败降级为纯代码）
@@ -888,469 +890,28 @@ public class WatchlistPanel extends JPanel {
             String firstMessage = "请解读以下财经快讯：\n【标题】" + title
                     + "\n【摘要】" + digestText;
             SwingUtilities.invokeLater(() -> {
-                if (restoreAiDialog(AI_DIALOG_INTERPRETATION)) {
+                // 取行情期间用户可能又点了另一条快讯，这条已过期的解读不能再抢占页签
+                if (!title.equals(interpretationTitle)) {
                     return;
                 }
-                List<String> history = new java.util.concurrent.CopyOnWriteArrayList<>();
-                JDialog dialog = openAiDialog(AI_DIALOG_INTERPRETATION, "AI 快讯解读", systemPrompt, history);
-                JComponent loading = (JComponent) dialog.getRootPane().getClientProperty("loadingPanel");
-                if (loading != null) {
-                    loading.setVisible(false);
+                if (restoreAiSession(AI_SESSION_INTERPRETATION)) {
+                    return;
                 }
-                Object send = dialog.getRootPane().getClientProperty("sendMessage");
-                if (send instanceof java.util.function.Consumer) {
-                    ((java.util.function.Consumer<Object>) send).accept(firstMessage);
-                }
+                AiChatPanel session = openAiSession(
+                        AI_SESSION_INTERPRETATION, "AI 快讯解读", systemPrompt);
+                session.send(firstMessage);
             });
         }).start();
     }
 
     /**
-     * 构建 AI 对话框（自选分析、快讯解读共用）
-     */
-    @SuppressWarnings("unchecked")
-    /** 用户气泡最大文本宽度（短消息右对齐、按内容自适应） */
-    private static final int MAX_BUBBLE_TEXT_WIDTH = 380;
-    private static final int MIN_BUBBLE_TEXT_WIDTH = 48;
-    /** AI 对话框固定尺寸；AI 气泡按可用宽度撑满，避免右侧空出一块 */
-    private static final int AI_DIALOG_WIDTH = 560;
-    private static final int AI_DIALOG_HEIGHT = 460;
-    /** 560 - messagesPanel 左右边距 28 - 垂直滚动条 14 - 气泡左右内边距 24 */
-    private static final int AI_BUBBLE_TEXT_WIDTH = AI_DIALOG_WIDTH - 28 - 14 - 24;
-    /** 与 IDEA 蓝灰系一致的气泡底色，随明暗主题切换；不再用微信绿 */
-    private static final Color USER_BUBBLE_BG =
-            new JBColor(new Color(0xD6E8FF), new Color(0x2F4A6B));
-    private static final Color AI_BUBBLE_BG =
-            new JBColor(new Color(0xF4F8F8), new Color(0x3A3B3D));
-
-    /** 自绘圆角气泡；Swing HTML 3.2 不支持 border-radius，只能画出来 */
-    private static class BubblePanel extends JPanel {
-        private final Color bg;
-        /** 思考/等待状态下不画气泡底框，只留一行弱化文字 */
-        private boolean statusMode;
-
-        BubblePanel(Color bg, JTextArea area) {
-            this.bg = bg;
-            setOpaque(false);
-            setLayout(new BorderLayout());
-            setBorder(JBUI.Borders.empty(6, 12));
-            add(area, BorderLayout.CENTER);
-        }
-
-        void setStatusMode(boolean status) {
-            if (statusMode != status) {
-                statusMode = status;
-                repaint();
-            }
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            if (!statusMode) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                try {
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
-                            RenderingHints.VALUE_ANTIALIAS_ON);
-                    g2.setColor(bg);
-                    g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 14, 14);
-                } finally {
-                    g2.dispose();
-                }
-            }
-            super.paintComponent(g);
-        }
-    }
-
-    /** 一条消息：行容器 + 气泡 + 可流式原地更新的文本区，宽度按最长行自适应 */
-    private static class Bubble {
-        final JPanel row;
-        final BubblePanel bubble;
-        final JTextArea area;
-        private final boolean isUser;
-        private final Font baseFont;
-        private boolean statusMode;
-
-        Bubble(boolean isUser, String text) {
-            this.isUser = isUser;
-            area = new JTextArea(text == null ? "" : text);
-            area.setEditable(false);
-            area.setLineWrap(true);
-            area.setWrapStyleWord(true);
-            area.setOpaque(false);
-            area.setBorder(null);
-            Font labelFont = UIManager.getFont("Label.font");
-            baseFont = labelFont != null ? labelFont : JBFont.label();
-            area.setFont(baseFont.deriveFont(Font.PLAIN, 13f));
-            area.setForeground(UIUtil.getLabelForeground());
-            bubble = new BubblePanel(isUser ? USER_BUBBLE_BG : AI_BUBBLE_BG, area);
-            if (isUser) {
-                // 用户消息通常很短，右对齐并按内容自适应
-                row = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
-                row.add(bubble);
-            } else {
-                // AI 输出占满整行：BorderLayout.CENTER 会把气泡横向拉伸到容器宽度
-                row = new JPanel(new BorderLayout());
-                row.add(bubble, BorderLayout.CENTER);
-            }
-            row.setOpaque(false);
-            setText(text == null ? "" : text);
-        }
-
-        /** 思考/等待状态：灰字斜体、无气泡底框；正文：常规字体与气泡 */
-        void setStatusMode(boolean status) {
-            if (statusMode == status) {
-                return;
-            }
-            statusMode = status;
-            bubble.setStatusMode(status);
-            area.setFont(status
-                    ? baseFont.deriveFont(Font.ITALIC, 12f)
-                    : baseFont.deriveFont(Font.PLAIN, 13f));
-            area.setForeground(status
-                    ? JBColor.namedColor("Label.disabledForeground", new Color(0x999999))
-                    : UIUtil.getLabelForeground());
-            bubble.repaint();
-        }
-
-        void setText(String text) {
-            area.setText(text);
-            FontMetrics fm = area.getFontMetrics(area.getFont());
-            int natural = 0;
-            for (String line : text.split("\n", -1)) {
-                natural = Math.max(natural, fm.stringWidth(line));
-            }
-            int w = isUser
-                    ? Math.max(MIN_BUBBLE_TEXT_WIDTH, Math.min(natural + 2, MAX_BUBBLE_TEXT_WIDTH))
-                    : AI_BUBBLE_TEXT_WIDTH;
-            // 给定宽度后取换行后的真实高度，避免气泡留大片空白；
-            // FontMetrics 估算行数作为下界，防止不同 LAF 下 getPreferredSize 不按当前宽度换行
-            int estimatedLines = 0;
-            for (String line : text.split("\n", -1)) {
-                estimatedLines += Math.max(1,
-                        (int) Math.ceil((double) fm.stringWidth(line) / Math.max(1, w)));
-            }
-            area.setSize(new Dimension(w, Short.MAX_VALUE));
-            int lineHeight = fm.getHeight();
-            int measured = area.getPreferredSize().height;
-            // 上限收在估算行数 +1 行，避免 JTextArea 尾部多算一行造成气泡底部大片空白
-            int h = Math.max(lineHeight * estimatedLines,
-                    Math.min(measured, lineHeight * (estimatedLines + 1)));
-            area.setPreferredSize(new Dimension(w, h));
-            bubble.setPreferredSize(new Dimension(w + 24, h + 12));
-            bubble.revalidate();
-        }
-    }
-
-    private JDialog buildAiChatDialog(String title, String systemPrompt,
-                                      java.util.List<String> history) {
-        // 以当前 IDE 窗口为 owner 并相对其居中，与「添加」「设置」弹窗位置统一
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(this),
-                title, Dialog.ModalityType.MODELESS);
-        dialog.setLayout(new BorderLayout());
-        dialog.setSize(AI_DIALOG_WIDTH, AI_DIALOG_HEIGHT);
-        dialog.setLocationRelativeTo(SwingUtilities.getWindowAncestor(this));
-        // JDialog 没有 Frame.ICONIFIED 最小化态：Esc 用 setVisible(false) 收起并保留会话，
-        // 标题栏关闭按钮仍为真正关闭（dispose），方便重新开一轮新会话
-        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
-
-        // ── 聊天区域：每条消息一个自绘圆角气泡，宽度随内容自适应 ──
-        JPanel messagesPanel = new JPanel();
-        messagesPanel.setLayout(new BoxLayout(messagesPanel, BoxLayout.Y_AXIS));
-        messagesPanel.setBackground(UIUtil.getPanelBackground());
-        messagesPanel.setBorder(JBUI.Borders.empty(10, 14));
-        JScrollPane chatScrollPane = new JBScrollPane(messagesPanel);
-        chatScrollPane.setBorder(null);
-        chatScrollPane.getViewport().setBackground(UIUtil.getPanelBackground());
-        chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
-        chatScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-
-        final java.util.concurrent.atomic.AtomicReference<Runnable> cancelRef =
-                new java.util.concurrent.atomic.AtomicReference<>();
-        final Bubble[] streamingBubble = {null};
-        final StringBuilder streamingText = new StringBuilder();
-        final long[] lastRender = {0L};
-
-        Runnable scrollToBottom = () -> SwingUtilities.invokeLater(() -> {
-            JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
-            vBar.setValue(vBar.getMaximum());
-        });
-        Runnable reflowMessages = () -> {
-            messagesPanel.revalidate();
-            messagesPanel.repaint();
-            scrollToBottom.run();
-        };
-
-        // Esc 收起时窗口只是隐藏（仍 displayable），请求仍在进行：下面三个回调不能用
-        // isShowing() 提前返回，否则收起期间的消息会丢失；只有真正 dispose 后才跳过。
-        // 普通消息：左右对齐即可区分角色，不再浮动「你 / AI 分析」小标签
-        java.util.function.BiConsumer<Boolean, String> appendMessage = (isUser, content) -> {
-            SwingUtilities.invokeLater(() -> {
-                if (!dialog.isDisplayable()) return;
-                streamingBubble[0] = null;
-                streamingText.setLength(0);
-                messagesPanel.add(new Bubble(isUser, content == null ? "" : content).row);
-                messagesPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
-                reflowMessages.run();
-            });
-        };
-
-        // 流式增量：原地更新同一个气泡的文本与尺寸，不重建整段聊天区
-        java.util.function.Consumer<String> updateStreamingAi = chunk ->
-                SwingUtilities.invokeLater(() -> {
-                    if (!dialog.isDisplayable()) return;
-                    boolean first = streamingBubble[0] == null;
-                    if (first) {
-                        Bubble b = new Bubble(false, "");
-                        streamingBubble[0] = b;
-                        streamingText.setLength(0);
-                        messagesPanel.add(b.row);
-                        messagesPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
-                    }
-                    String text = chunk == null ? "" : chunk;
-                    boolean hint = text.startsWith(AIService.STREAM_HINT_PREFIX);
-                    boolean replace = text.startsWith(AIService.STREAM_STATUS_PREFIX);
-                    if (hint || replace) {
-                        // 整段替换：等待提示与第一版草稿用弱化样式，定稿恢复常规气泡
-                        streamingText.setLength(0);
-                        text = text.substring(1);
-                        streamingBubble[0].setStatusMode(hint);
-                    }
-                    streamingText.append(text);
-                    long now = System.currentTimeMillis();
-                    if (!first && now - lastRender[0] < 80) {
-                        return;
-                    }
-                    lastRender[0] = now;
-                    streamingBubble[0].setText(streamingText.toString());
-                    reflowMessages.run();
-                });
-
-        // 流结束：用最终（后处理后）文本替换流式气泡内容；无 chunk 时退化为普通追加
-        java.util.function.Consumer<String> finishStreaming = finalText ->
-                SwingUtilities.invokeLater(() -> {
-                    if (!dialog.isDisplayable()) return;
-                    String text = finalText == null ? "" : finalText;
-                    if (streamingBubble[0] != null) {
-                        // 最终文本一定是定稿：即使模型没写第二版，也把草稿样式切回正式气泡
-                        streamingBubble[0].setStatusMode(false);
-                        streamingBubble[0].setText(text);
-                    } else {
-                        messagesPanel.add(new Bubble(false, text).row);
-                        messagesPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
-                    }
-                    streamingBubble[0] = null;
-                    streamingText.setLength(0);
-                    reflowMessages.run();
-                });
-
-        // ── 顶部加载面板 ──
-        JPanel loadingPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 8));
-        loadingPanel.setBackground(UIUtil.getPanelBackground());
-        JProgressBar progressBar = new JProgressBar();
-        progressBar.setIndeterminate(true);
-        progressBar.setPreferredSize(new Dimension(16, 16));
-        JLabel loadingLabel = new JLabel("正在获取行情数据...");
-        loadingLabel.setFont(JBFont.label().deriveFont(12f));
-        loadingLabel.setForeground(JBColor.namedColor("Label.disabledForeground", new Color(0x999999)));
-        loadingPanel.add(progressBar);
-        loadingPanel.add(loadingLabel);
-
-        // ── 思考中提示 ──
-        JPanel thinkingPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        thinkingPanel.setBackground(UIUtil.getPanelBackground());
-        JLabel thinkingLabel = new JLabel("AI 思考中...");
-        thinkingLabel.setFont(JBFont.label().deriveFont(11f));
-        thinkingLabel.setForeground(JBColor.namedColor("Label.disabledForeground", new Color(0x999999)));
-        thinkingPanel.add(thinkingLabel);
-        thinkingPanel.setVisible(false);
-
-        // ── 输入区域 ──
-        JPanel inputPanel = new JPanel(new BorderLayout(8, 0));
-        inputPanel.setBorder(JBUI.Borders.empty(0, 12, 12, 12));
-        inputPanel.setBackground(UIUtil.getPanelBackground());
-        JTextField inputField = new JTextField();
-        inputField.setToolTipText("输入问题，按 Enter 发送");
-        inputField.setFont(JBFont.label().deriveFont(13f));
-        inputField.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1),
-                JBUI.Borders.empty(6, 8)));
-        JButton sendBtn = new JButton("发送");
-        sendBtn.setPreferredSize(new Dimension(60, 30));
-        inputPanel.add(inputField, BorderLayout.CENTER);
-        inputPanel.add(sendBtn, BorderLayout.EAST);
-
-        // 发送/停止 共用一个按钮：请求期间切换文案，不再单独放一个抢眼的停止按钮
-        final boolean[] requesting = {false};
-        java.util.function.Consumer<Boolean> setRequesting = busy -> {
-            requesting[0] = busy;
-            sendBtn.setText(busy ? "停止" : "发送");
-            // 按钮始终可点：非请求中用于发送，请求中用于停止
-            sendBtn.setToolTipText(busy ? "中止本次生成" : "发送问题（Enter）");
-        };
-
-        // ── 发送消息：输入框回车/按钮触发；外部入口经 clientProperty 拿 sendMessage 首发提问 ──
-        // 静默首发用于自动触发的入口（速览）：指令只进 history，不占用一条用户气泡
-        final boolean[] showUserBubble = {true};
-        java.util.function.Consumer<String> sendMessage = text -> {
-            String userMsg = text == null ? "" : text.trim();
-            if (userMsg.isEmpty()) return;
-            inputField.setText("");
-            history.add(userMsg);
-            if (showUserBubble[0]) {
-                appendMessage.accept(true, userMsg);
-            }
-            thinkingPanel.setVisible(true);
-            setRequesting.accept(true);
-
-            // 回调在 EDT 上取出，供后台线程安全引用
-            JRootPane root = dialog.getRootPane();
-            java.util.function.Consumer<String> onChunk =
-                    (java.util.function.Consumer<String>) root.getClientProperty("streamingChunk");
-            java.util.function.Consumer<String> finish =
-                    (java.util.function.Consumer<String>) root.getClientProperty("finishStreaming");
-            java.util.function.Consumer<Runnable> setCancel =
-                    (java.util.function.Consumer<Runnable>) root.getClientProperty("setCancel");
-            java.util.function.Consumer<String> showAiResult = msg -> {
-                if (finish != null) {
-                    finish.accept(msg);
-                } else {
-                    appendMessage.accept(false, msg);
-                }
-            };
-
-            String key = currentApiKey;
-            new Thread(() -> {
-                try {
-                    AIService svc = createAiService(key);
-                    if (setCancel != null) {
-                        setCancel.accept(svc::cancel);
-                    }
-                    svc.chatAsync(systemPrompt, history, onChunk).thenAccept(result -> {
-                        SwingUtilities.invokeLater(() -> {
-                            thinkingPanel.setVisible(false);
-                            loadingPanel.setVisible(false);
-                            setRequesting.accept(false);
-                            history.add(result);
-                            showAiResult.accept(result);
-                        });
-                    }).exceptionally(e -> {
-                        SwingUtilities.invokeLater(() -> {
-                            thinkingPanel.setVisible(false);
-                            loadingPanel.setVisible(false);
-                            setRequesting.accept(false);
-                            // 失败也要补一条 assistant 占位，否则 history 的「偶数 user / 奇数 assistant」
-                            // 交替被打破，后续轮次会把用户提问误当作上一轮结论基线
-                            history.add(AI_FAILED_PLACEHOLDER);
-                            showAiResult.accept("AI 分析失败: " + e.getMessage());
-                        });
-                        return null;
-                    });
-                } catch (Exception e) {
-                    SwingUtilities.invokeLater(() -> {
-                        thinkingPanel.setVisible(false);
-                        loadingPanel.setVisible(false);
-                        setRequesting.accept(false);
-                        history.add(AI_FAILED_PLACEHOLDER);
-                        showAiResult.accept("服务初始化失败: " + e.getMessage());
-                    });
-                }
-            }).start();
-        };
-
-        // 自动触发的首发消息：同样进 history 以保证角色交替，但不显示用户气泡
-        java.util.function.Consumer<String> sendMessageSilent = text -> {
-            showUserBubble[0] = false;
-            try {
-                sendMessage.accept(text);
-            } finally {
-                showUserBubble[0] = true;
-            }
-        };
-
-        Runnable sendAction = () -> {
-            if (requesting[0]) {
-                Runnable cancel = cancelRef.get();
-                if (cancel != null) {
-                    cancel.run();
-                }
-            } else {
-                sendMessage.accept(inputField.getText());
-            }
-        };
-        sendBtn.addActionListener(e -> sendAction.run());
-        // 请求中按 Enter 不做任何事，避免误触发停止或重复发送
-        inputField.addActionListener(e -> {
-            if (!requesting[0]) {
-                sendAction.run();
-            }
-        });
-
-        // Esc 收起：只隐藏不销毁，气泡与 history 保留，再点同一入口原样恢复；
-        // 想彻底重开一轮，用标题栏关闭按钮
-        dialog.getRootPane().registerKeyboardAction(
-                e -> dialog.setVisible(false),
-                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
-                JComponent.WHEN_IN_FOCUSED_WINDOW
-        );
-
-        // 组装
-        JPanel inputWrapper = new JPanel(new BorderLayout());
-        inputWrapper.setBackground(UIUtil.getPanelBackground());
-        inputWrapper.add(thinkingPanel, BorderLayout.NORTH);
-        inputWrapper.add(inputPanel, BorderLayout.CENTER);
-
-        dialog.add(loadingPanel, BorderLayout.NORTH);
-        dialog.add(chatScrollPane, BorderLayout.CENTER);
-        dialog.add(inputWrapper, BorderLayout.SOUTH);
-
-        // 存储需要跨方法访问的组件
-        dialog.getRootPane().putClientProperty("loadingPanel", loadingPanel);
-        dialog.getRootPane().putClientProperty("loadingLabel", loadingLabel);
-        dialog.getRootPane().putClientProperty("appendMessage", appendMessage);
-        dialog.getRootPane().putClientProperty("sendMessage", sendMessage);
-        dialog.getRootPane().putClientProperty("sendMessageSilent", sendMessageSilent);
-        dialog.getRootPane().putClientProperty("streamingChunk", updateStreamingAi);
-        dialog.getRootPane().putClientProperty("finishStreaming", finishStreaming);
-        dialog.getRootPane().putClientProperty("setCancel",
-                (java.util.function.Consumer<Runnable>) cancelRef::set);
-        dialog.getRootPane().putClientProperty("setRequesting", setRequesting);
-
-        dialog.setVisible(true);
-        return dialog;
-    }
-
-    /**
      * 后台获取行情数据并触发 AI 自动分析
      */
-    @SuppressWarnings("unchecked")
-    private void runAiAutoAnalysis(String marketName, java.util.List<String> history, JDialog dialog) {
-        JRootPane root = dialog.getRootPane();
-        JPanel loadingPanel = (JPanel) root.getClientProperty("loadingPanel");
-        JLabel loadingLabel = (JLabel) root.getClientProperty("loadingLabel");
-        java.util.function.BiConsumer<Boolean, String> appendMessage =
-                (java.util.function.BiConsumer<Boolean, String>) root.getClientProperty("appendMessage");
-        java.util.function.Consumer<String> onChunk =
-                (java.util.function.Consumer<String>) root.getClientProperty("streamingChunk");
-        java.util.function.Consumer<String> finish =
-                (java.util.function.Consumer<String>) root.getClientProperty("finishStreaming");
-        java.util.function.Consumer<Runnable> setCancel =
-                (java.util.function.Consumer<Runnable>) root.getClientProperty("setCancel");
-        java.util.function.Consumer<Boolean> setRequesting =
-                (java.util.function.Consumer<Boolean>) root.getClientProperty("setRequesting");
+    private void runAiAutoAnalysis(String marketName, AiChatPanel session) {
         // 首轮分析也占用发送按钮：期间变为「停止」，同时避免用户并发发起追问
-        if (setRequesting != null) {
-            setRequesting.accept(true);
-        }
-        java.util.function.Consumer<String> showAiResult = msg -> {
-            if (setRequesting != null) {
-                setRequesting.accept(false);
-            }
-            if (finish != null) {
-                finish.accept(msg);
-            } else {
-                appendMessage.accept(false, msg);
-            }
-        };
+        session.beginAutoRequest();
+        // 拉行情阶段先给反馈，拿到数据后再切换成按只数计的等待文案
+        session.startLoading("正在获取行情数据...");
 
         new Thread(() -> {
             PluginLog.info("[WatchlistPanel] runAiAutoAnalysis thread started, market=" + marketName);
@@ -1358,77 +919,44 @@ public class WatchlistPanel extends JPanel {
             PluginLog.info("[WatchlistPanel] getFilteredItems returned " + (items != null ? items.size() : 0) + " items");
             if (items.isEmpty()) {
                 PluginLog.info("[WatchlistPanel] runAiAutoAnalysis FAIL: no items, hiding loadingPanel");
-                SwingUtilities.invokeLater(() -> {
-                    loadingPanel.setVisible(false);
-                    if (setRequesting != null) {
-                        setRequesting.accept(false);
-                    }
-                    appendMessage.accept(false, "暂无行情数据，请稍后重试...");
-                });
+                session.notice("暂无行情数据，请稍后重试...");
                 return;
             }
 
             final List<QuoteItem> finalItems = items;
             final String marketContext = AIService.buildMarketContext(items, marketName);
-            history.add(marketContext);
+            session.addHistory(marketContext);
 
-            // 等待期间给出耗时反馈；loadingPanel 隐藏后下一次 tick 自停，无需改动各回调
-            final long startAt = System.currentTimeMillis();
-            final Timer waitTimer = new Timer(1000, ev -> {
-                if (!loadingPanel.isVisible()) {
-                    ((Timer) ev.getSource()).stop();
-                    return;
-                }
-                long sec = (System.currentTimeMillis() - startAt) / 1000;
-                loadingLabel.setText("正在分析 " + items.size() + " 只自选股... 已等待 " + sec + " 秒");
-            });
-            SwingUtilities.invokeLater(() -> {
-                loadingLabel.setText("正在分析 " + items.size() + " 只自选股...");
-                waitTimer.start();
-            });
+            // 等待期间给出耗时反馈；loadingPanel 隐藏后计时的下一次 tick 自停
+            session.startLoading("正在分析 " + items.size() + " 只自选股...");
 
             String key = currentApiKey;
             AIService.AiProfile active = AIService.findProfile(currentProfileId);
             PluginLog.info("[WatchlistPanel] using apiKey_len=" + (key != null ? key.length() : 0)
                     + ", profile=" + active.displayName() + ", model=" + active.model);
             try {
-                // 不再叠加全局 orTimeout：callAPI 已有 60s 读取超时，同长的外层超时会在响应
-                // 到达前抢先判定失败，且不会取消底层请求，导致已生成的结果被丢弃
+                // 不再叠加全局 orTimeout：callAPI 已有读取超时（流式 120s / 整包 180s），
+                // 同长的外层超时会在响应到达前抢先判定失败，且不会取消底层请求，导致已生成的结果被丢弃
                 AIService svc = createAiService(key);
-                if (setCancel != null) {
-                    setCancel.accept(svc::cancel);
-                }
-                svc.analyzeWatchlistAsync(finalItems, marketName, onChunk)
+                session.attachCancel(svc::cancel);
+                svc.analyzeWatchlistAsync(finalItems, marketName, session::onStreamChunk)
                     .thenAccept(result -> {
                         PluginLog.info("[WatchlistPanel] analyzeWatchlistAsync SUCCESS, result_len=" +
                             (result != null ? result.length() : 0));
-                        SwingUtilities.invokeLater(() -> {
-                            loadingPanel.setVisible(false);
-                            history.add(result);
-                            showAiResult.accept(result);
-                        });
+                        session.completeRequest(result);
                     }).exceptionally(e -> {
                         PluginLog.error("[WatchlistPanel] analyzeWatchlistAsync FAILED: " + e.getClass().getName() + " - " + e.getMessage(), e);
-                        SwingUtilities.invokeLater(() -> {
-                            loadingPanel.setVisible(false);
-                            Throwable cause = (e instanceof java.util.concurrent.CompletionException) ? e.getCause() : e;
-                            if (cause instanceof java.util.concurrent.TimeoutException) {
-                                showAiResult.accept(AIService.TIMEOUT_HINT);
-                                return;
-                            }
-                            String msg = cause != null ? cause.getMessage() : e.getMessage();
-                            if (msg == null || msg.isEmpty()) {
-                                msg = "AI 分析失败，请稍后重试";
-                            }
-                            showAiResult.accept("AI 分析失败: " + msg);
-                        });
+                        Throwable cause = (e instanceof java.util.concurrent.CompletionException) ? e.getCause() : e;
+                        String msg = cause != null ? cause.getMessage() : e.getMessage();
+                        String failureText = (msg == null || msg.isEmpty())
+                                ? "AI 分析失败，请稍后重试" : "AI 分析失败: " + msg;
+                        // failRequest 会补一条 assistant 占位：chatAsync 按序号定角色，
+                        // 少一条回答会让下一条追问被当成 assistant 消息发出去
+                        session.failRequest(failureText);
                         return null;
                     });
             } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> {
-                    loadingPanel.setVisible(false);
-                    showAiResult.accept("服务初始化失败: " + e.getMessage());
-                });
+                session.failRequest("服务初始化失败: " + e.getMessage());
             }
         }).start();
     }

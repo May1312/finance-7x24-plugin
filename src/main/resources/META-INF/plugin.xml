@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.4.0</version>
+    <version>2.4.1</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, one-click AI news interpretation, and AI portfolio analysis with multi-turn chat.
@@ -15,6 +15,22 @@
     <depends>com.intellij.modules.platform</depends>
 
     <change-notes><![CDATA[
+        <b>2.4.1</b>
+        <ul>
+            <li>新增：AI 会话改为工具窗口页签——速览 / AI复盘 / 快讯解读各占一个页签，页签标题带关闭按钮，× 关闭即结束会话，再点入口开新一轮，不再弹出独立窗口；切到 AI 页签时快讯 / 自选行情轮询自动暂停</li>
+            <li>新增：关闭 AI 页签的落地规则——还有其他 AI 页签时落到左侧相邻，全部关完回「快讯」，关闭后台页签不打断当前所在页面</li>
+            <li>新增：「AI选股分析」更名为「AI复盘」</li>
+            <li>优化：流式与追问统一「只追加不替换」——失败时保留已流式显示的正文、错误提示追加在其后；主动停止保留已生成内容；流式超时不再用整句提示顶掉半截回答</li>
+            <li>优化：「停止生成」立即生效——重试与 429 退避期间取消即刻断开连接，不再等满退避或醒来后重发请求</li>
+            <li>优化：多模型兼容加固——`reasoning_content` 思考过程与正文分离，思考期间只显示「模型思考中…（已接收 N 字）」不进气泡；兼容标 JSON 实发 SSE 的渠道，带前导空格的 `data:` 行不再导致整轮回答为空</li>
+            <li>优化：HTTP 读取超时分级（流式 120s / 整包 180s）；厂商拒收参数按 400/422 逐级降级（去 temperature → 换 max_completion_tokens → 撤 stream），401/429 按原语义处理</li>
+            <li>修复：速览用异步快照覆盖 Key 缓存，等待期间保存的新 Key 可能被旧值顶掉导致 401</li>
+            <li>修复：分析失败后对话历史角色错位，追问被当成 assistant 消息发出</li>
+            <li>修复：快讯解读换新闻串会话——按标题识别话题，换新闻即丢弃旧会话，行情读取期间的过期解读不再抢占页签</li>
+            <li>修复：设置对话框关闭只隐藏窗口、反复打开积累实例；设置页未编辑的 Key 不再被空串覆盖</li>
+            <li>适配：伦敦金开收市时段随伦敦夏令时平移；平盘个股「今日收平」按盘前 / 盘中语境改写，多股票段落的措辞改写不再套错市场时段</li>
+            <li>优化：本地日志超过 5MB 自动滚动，避免无限增长</li>
+        </ul>
         <b>2.4.0</b>
         <ul>
             <li>新增：AI 服务改为多配置管理——可保存多份独立配置（名称 / 接口地址 / 模型 ID / API Key），下拉切换当前使用的服务；每份 Key 按配置单独保存在本机凭据存储，互不覆盖</li>

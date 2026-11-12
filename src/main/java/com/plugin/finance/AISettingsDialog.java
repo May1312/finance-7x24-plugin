@@ -31,6 +31,8 @@ public class AISettingsDialog extends JDialog {
         super(parent != null ? SwingUtilities.getWindowAncestor(parent) : null,
                 "AI 模型设置", ModalityType.APPLICATION_MODAL);
         this.parent = parent;
+        // 默认 HIDE_ON_CLOSE 会在点右上角关闭时只隐藏窗口，下次再打开又多一个实例
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setResizable(false);
         setLayout(new BorderLayout());
 

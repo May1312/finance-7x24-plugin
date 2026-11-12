@@ -303,7 +303,11 @@ public class AISettingsPanel extends JPanel {
         target.name = nameField.getText().trim();
         target.baseUrl = baseUrlField.getText().trim();
         target.model = modelField.getText().trim();
-        keyInputs.put(target.id, getKeyInput());
+        // 只在用户真正改过 Key 时写回：未改动时表单里的空串可能只是异步回填还没完成，
+        // 无条件写入会在保存时把钥匙串里的 Key 覆盖成空串
+        if (keyDirty.contains(target.id)) {
+            keyInputs.put(target.id, getKeyInput());
+        }
     }
 
     private void updateHelp(AIService.AiProfile p) {
@@ -450,8 +454,15 @@ public class AISettingsPanel extends JPanel {
         return p != null ? p.id : activeId;
     }
 
+    /** 保存后交给调用方的 Key：表单为空且用户没动过时回落到存储值，
+     *  否则异步回填尚未完成就会把运行时的 Key 误置为空 */
     public String getActiveApiKey() {
-        return getKeyInput();
+        String typed = getKeyInput();
+        AIService.AiProfile p = selectedProfile();
+        if (p != null && typed.isEmpty() && !keyDirty.contains(p.id)) {
+            return AIService.getCachedApiKey(p.keySlot());
+        }
+        return typed;
     }
 
     /** JPasswordField 需经 getPassword 读取，读后清零字符数组 */
@@ -514,7 +525,7 @@ public class AISettingsPanel extends JPanel {
         testing = true;
         testBtn.setEnabled(false);
         testBtn.setText("测试中…");
-        testBtn.setToolTipText("正在请求模型，最长读取超时 60 秒");
+        testBtn.setToolTipText("正在请求模型，耗时取决于模型生成速度");
         helpLabel.setCursor(Cursor.getDefaultCursor());
         helpLabel.setText(pendingHtml(modelName, 0));
         testTimer = new Timer(1000, ev -> {
@@ -552,8 +563,12 @@ public class AISettingsPanel extends JPanel {
         testBtn.setToolTipText(null);
         helpLabel.setCursor(Cursor.getDefaultCursor());
         long seconds = (System.currentTimeMillis() - startAt) / 1000;
-        boolean ok = failure == null && result != null
-                && !result.contains("失败") && !result.contains("错误") && !result.contains("API错误");
+        // callModel 的失败会以普通文本返回（超时 / 无有效内容），按已知失败文本精确判断；
+        // 不能用「失败 / 错误」关键字猜：正常回答里也可能出现这些词
+        boolean ok = failure == null && result != null && !result.trim().isEmpty()
+                && !result.startsWith("AI分析失败")
+                && !result.contains(AIService.TIMEOUT_HINT)
+                && !result.contains(AIService.INVALID_CONTENT_HINT);
         if (ok) {
             String summary = brief(result, 50);
             helpLabel.setText("<html><b style='color:" + colorHex(STATUS_OK) + ";'>连接成功</b>"
