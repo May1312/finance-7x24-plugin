@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.5.1</version>
+    <version>2.5.0</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, one-click AI news interpretation, and AI portfolio analysis with multi-turn chat.
@@ -15,21 +15,15 @@
     <depends>com.intellij.modules.platform</depends>
 
     <change-notes><![CDATA[
-        <b>2.5.1</b>
-        <ul>
-            <li>优化：状态栏悬停 tooltip 改三列单行网格——名称左、阈值灰字中列、涨跌幅右列，自选异动每只一行、与大盘行同高更紧凑（替代阈值压在涨跌幅下方的两行排布）</li>
-            <li>优化：大盘指数名称写全——上证指数 / 深证成指 / 创业板指</li>
-            <li>优化：自选异动排序改为红涨在前、绿跌在后，组内按幅度降序（此前按幅度绝对值排序，红绿交错）</li>
-        </ul>
         <b>2.5.0</b>
         <ul>
-            <li>新增：IDE 状态栏隐蔽行情入口——常态只显示一枚灰色折线小图标（与工具窗口图标同款），无点击行为、不弹任何系统通知；悬停 tooltip 展示 A 股大盘（上证/深成/创业，闭市带「休市」标注）与自选异动明细；可通过状态栏右键菜单隐藏</li>
+            <li>新增：IDE 状态栏隐蔽行情入口——常态只显示一枚灰色折线小图标（与工具窗口图标同款），无点击行为、不弹任何系统通知；悬停 tooltip 展示 A 股大盘（上证指数/深证成指/创业板指，闭市带「休市」标注）与自选异动明细；可通过状态栏右键菜单隐藏</li>
             <li>新增：个股异动阈值——自选右键「异动阈值…」单只或多选批量设置阈值（%），留空恢复默认 3%；保存后状态栏立即重算；删除自选时同步清除其阈值</li>
             <li>新增：自选关联快讯静默标记——快讯标题/摘要命中自选名称时，卡片时间胶囊右侧画主题蓝小圆点，悬停显示关联自选名称，全程不弹窗</li>
             <li>新增：应用级行情快照 MarketMonitorService——独立于工具窗口是否打开，开市 60 秒 / 闭市 5 分钟低频轮询，状态栏与快讯标记共用同一份数据，指数与自选合并为一次批量请求</li>
             <li>优化：开市时段判断抽为共享 MarketHours；A 股判断改用显式 Asia/Shanghai 时区，修复非东八区机器上的判断偏差</li>
             <li>修复：状态栏行情 widget 固定在最右端（order=last），打开/关闭文件时图标位置不再左移混入编辑器 widget 区</li>
-            <li>优化：悬停 tooltip 改两列网格，名称左 / 涨跌幅右对齐，阈值灰字在涨跌幅正下方；nobr 防断行、不用 colspan 控宽，屏幕边缘不再裁切</li>
+            <li>优化：悬停 tooltip 采用三列单行网格——名称左、阈值灰字中列、涨跌幅右对齐，自选异动每只一行、与大盘行同高；异动红涨在前、绿跌在后，组内按幅度降序；nobr 防断行、不用 colspan 控宽，屏幕边缘不再裁切</li>
         </ul>
     ]]></change-notes>
 
