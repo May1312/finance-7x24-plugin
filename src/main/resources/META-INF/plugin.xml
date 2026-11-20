@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.ylplugin.eastmoney7x24</id>
     <name>Finance 7x24 News</name>
-    <version>2.4.1</version>
+    <version>2.5.1</version>
     <vendor>plugin</vendor>
     <description><![CDATA[
         Finance 7x24 News shows public financial news, watchlist quotes and AI-powered analysis in IntelliJ IDEA. It supports 7x24 news updates, stock/ETF/index watchlists for A-share, HK, US and international gold markets, automatic refresh per market hours, multi-source fallback quote data, one-click AI news interpretation, and AI portfolio analysis with multi-turn chat.
@@ -15,37 +15,21 @@
     <depends>com.intellij.modules.platform</depends>
 
     <change-notes><![CDATA[
-        <b>2.4.1</b>
+        <b>2.5.1</b>
         <ul>
-            <li>新增：AI 会话改为工具窗口页签——速览 / AI复盘 / 快讯解读各占一个页签，页签标题带关闭按钮，× 关闭即结束会话，再点入口开新一轮，不再弹出独立窗口；切到 AI 页签时快讯 / 自选行情轮询自动暂停</li>
-            <li>新增：关闭 AI 页签的落地规则——还有其他 AI 页签时落到左侧相邻，全部关完回「快讯」，关闭后台页签不打断当前所在页面</li>
-            <li>新增：「AI选股分析」更名为「AI复盘」</li>
-            <li>优化：流式与追问统一「只追加不替换」——失败时保留已流式显示的正文、错误提示追加在其后；主动停止保留已生成内容；流式超时不再用整句提示顶掉半截回答</li>
-            <li>优化：「停止生成」立即生效——重试与 429 退避期间取消即刻断开连接，不再等满退避或醒来后重发请求</li>
-            <li>优化：多模型兼容加固——`reasoning_content` 思考过程与正文分离，思考期间只显示「模型思考中…（已接收 N 字）」不进气泡；兼容标 JSON 实发 SSE 的渠道，带前导空格的 `data:` 行不再导致整轮回答为空</li>
-            <li>优化：HTTP 读取超时分级（流式 120s / 整包 180s）；厂商拒收参数按 400/422 逐级降级（去 temperature → 换 max_completion_tokens → 撤 stream），401/429 按原语义处理</li>
-            <li>修复：速览用异步快照覆盖 Key 缓存，等待期间保存的新 Key 可能被旧值顶掉导致 401</li>
-            <li>修复：分析失败后对话历史角色错位，追问被当成 assistant 消息发出</li>
-            <li>修复：快讯解读换新闻串会话——按标题识别话题，换新闻即丢弃旧会话，行情读取期间的过期解读不再抢占页签</li>
-            <li>修复：设置对话框关闭只隐藏窗口、反复打开积累实例；设置页未编辑的 Key 不再被空串覆盖</li>
-            <li>适配：伦敦金开收市时段随伦敦夏令时平移；平盘个股「今日收平」按盘前 / 盘中语境改写，多股票段落的措辞改写不再套错市场时段</li>
-            <li>优化：本地日志超过 5MB 自动滚动，避免无限增长</li>
+            <li>优化：状态栏悬停 tooltip 改三列单行网格——名称左、阈值灰字中列、涨跌幅右列，自选异动每只一行、与大盘行同高更紧凑（替代阈值压在涨跌幅下方的两行排布）</li>
+            <li>优化：大盘指数名称写全——上证指数 / 深证成指 / 创业板指</li>
+            <li>优化：自选异动排序改为红涨在前、绿跌在后，组内按幅度降序（此前按幅度绝对值排序，红绿交错）</li>
         </ul>
-        <b>2.4.0</b>
+        <b>2.5.0</b>
         <ul>
-            <li>新增：AI 服务改为多配置管理——可保存多份独立配置（名称 / 接口地址 / 模型 ID / API Key），下拉切换当前使用的服务；每份 Key 按配置单独保存在本机凭据存储，互不覆盖</li>
-            <li>新增：内置商汤 / 智谱渠道降级为「预设模板」，新建配置时可一键填充常用服务参数，也可从空白配置接入任意 OpenAI 兼容接口；旧版单份配置与 Key 自动迁移</li>
-            <li>新增：工具窗口标题栏常驻「AI速览」「AI选股分析」「AI 设置」三个快捷入口，快讯 / 自选任意页签下都能一键直达</li>
-            <li>新增：「AI速览」汇总最近一批快讯要点，按三段中文结构输出，可在对话框中继续追问；首发指令不再显示为用户气泡</li>
-            <li>优化：AI 设置面板改为配置列表 + 新建 / 删除 / 编辑，测试连接期间显示耗时进度与结果摘要</li>
-            <li>优化：AI 对话框 Esc 收起会话、再点入口原样恢复（含正在生成的回答）；标题栏关闭按钮仍可彻底关闭以重开一轮</li>
-            <li>优化：生成期间右下角「发送」按钮临时变为「停止」，移除独立停止按钮；追问链路不再并发</li>
-            <li>优化：强化速览的简体中文三段输出约束与流式前言过滤，修复正文锚点误命中模型思考过程的问题</li>
-            <li>优化：聊天气泡配色、字体与留白收紧；AI 回答气泡撑满可用宽度，用户提问保持右对齐自适应</li>
-            <li>新增：AI速览显示带耗时的等待进度；等待、思考与草稿用弱化灰字呈现，与正式回答气泡区分</li>
-            <li>优化：流式输出压住推理自述、第一版草稿与重复定稿，只显示最终结果，不再出现英文思考过程或同一段文字重复覆盖</li>
-            <li>优化：生成被输出长度上限或连接提前结束时明确提示，不再把半截内容当作完整结论；输出上限相应提高</li>
-            <li>优化：速览仅汇总最近 15 条快讯，等待计时显示真实条数</li>
+            <li>新增：IDE 状态栏隐蔽行情入口——常态只显示一枚灰色折线小图标（与工具窗口图标同款），无点击行为、不弹任何系统通知；悬停 tooltip 展示 A 股大盘（上证/深成/创业，闭市带「休市」标注）与自选异动明细；可通过状态栏右键菜单隐藏</li>
+            <li>新增：个股异动阈值——自选右键「异动阈值…」单只或多选批量设置阈值（%），留空恢复默认 3%；保存后状态栏立即重算；删除自选时同步清除其阈值</li>
+            <li>新增：自选关联快讯静默标记——快讯标题/摘要命中自选名称时，卡片时间胶囊右侧画主题蓝小圆点，悬停显示关联自选名称，全程不弹窗</li>
+            <li>新增：应用级行情快照 MarketMonitorService——独立于工具窗口是否打开，开市 60 秒 / 闭市 5 分钟低频轮询，状态栏与快讯标记共用同一份数据，指数与自选合并为一次批量请求</li>
+            <li>优化：开市时段判断抽为共享 MarketHours；A 股判断改用显式 Asia/Shanghai 时区，修复非东八区机器上的判断偏差</li>
+            <li>修复：状态栏行情 widget 固定在最右端（order=last），打开/关闭文件时图标位置不再左移混入编辑器 widget 区</li>
+            <li>优化：悬停 tooltip 改两列网格，名称左 / 涨跌幅右对齐，阈值灰字在涨跌幅正下方；nobr 防断行、不用 colspan 控宽，屏幕边缘不再裁切</li>
         </ul>
     ]]></change-notes>
 
@@ -60,5 +44,11 @@
                 id="com.plugin.finance.AISettingsConfigurable"
                 displayName="Finance 7x24 News AI"
                 instance="com.plugin.finance.AISettingsConfigurable"/>
+        <applicationService
+                serviceImplementation="com.plugin.finance.MarketMonitorService"/>
+        <statusBarWidgetFactory
+                id="Finance7x24.Market"
+                implementation="com.plugin.finance.MarketStatusBarWidgetFactory"
+                order="last"/>
     </extensions>
 </idea-plugin>

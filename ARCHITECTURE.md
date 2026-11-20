@@ -11,6 +11,7 @@
 | 快讯 | KuaixunService / KuaixunPanel | 拉取东方财富 7x24 快讯，卡片流展示 + 自动刷新 |
 | 行情 | QuoteService / WatchlistPanel / StockSearchDialog | 自选行情多级兜底拉取、日K均线、市场筛选、大盘指数 |
 | AI | AiQuickActions / AIService / AISettingsPanel / WatchlistPanel 内嵌对话框 | 多配置管理、快讯速览与自选组合分析、多轮追问 |
+| 状态栏隐蔽行情 | MarketMonitorService / MarketStatusBarWidgetFactory / AbnormalThresholds / MarketHours | 低频行情快照、状态栏图标 + 悬停明细、个股异动阈值、开市时段共享判断 |
 
 ## 入口与页面结构
 
@@ -25,13 +26,15 @@ plugin.xml (toolWindow id="Finance 7x24 News", anchor=right)
 
 KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计时器——只有可见 tab 的计时器在运行。两个面板都通过 `addNotify`/`removeNotify` 管理生命周期（挂到 UI 时启动计时器并立即刷新一次，移除时停止）。
 
+状态栏 widget 经 `statusBarWidgetFactory`（id=`Finance7x24.Market`）独立注册，不依赖工具窗口是否打开；与 KuaixunPanel 一样订阅 MarketMonitorService 快照，`addNotify`/`removeNotify`（widget 为 install/dispose）管理订阅。
+
 ## 快讯模块
 
 - **KuaixunService**：请求东方财富 `newsapi.eastmoney.com` 快讯列表（column=102，每页 50 条）；响应是 JSONP 包裹的 JSON，`doRequest` 里剥壳后用 Gson 解析为 `KuaixunItem` 列表。`checkNewCount` 接口已定义但当前未使用。
 - **KuaixunPanel**：
   - 单一 1 秒 tick 的 Swing Timer 驱动倒计时和触发刷新（20 秒间隔），避免两个 timer 不同步；状态栏文案由 `setStatus`/`updateCountdownDisplay` 维护。
   - 手动刷新 `refreshData()` 清空重建；自动刷新 `doCheckNewData()` 用 SwingWorker 增量插入：按 `knownIds` 去重、逆序插到顶部，并做滚动位置补偿（保存视口 y → 插入卡片 → 布局完成后累加插入高度回写视口位置），刷新期间所有卡片 alpha 半透明闪烁。
-  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。卡片顶行右侧有「AI 解读」按钮，点击调 `WatchlistPanel.openNewsInterpretation`：后台批量拉一次自选行情拼出"名称(代码)"清单，连同快讯标题/摘要以 `NEWS_INTERPRET_PROMPT` 在 AI 会话页签首发提问，解读结果可继续追问（复用自选分析的面板与发送逻辑）。同一会话按新闻标题归属，点另一条快讯会重建会话，不复用上一条的追问上下文。
+  - `NewsCard` 为自绘圆角卡片（paintComponent 画背景/边框/时间 pill），支持 hover 高亮与 fade 动画；标题和摘要用自动换行的不可编辑 JTextArea。卡片顶行右侧有「AI 解读」按钮，点击调 `WatchlistPanel.openNewsInterpretation`：后台批量拉一次自选行情拼出"名称(代码)"清单，连同快讯标题/摘要以 `NEWS_INTERPRET_PROMPT` 在 AI 会话页签首发提问，解读结果可继续追问（复用自选分析的面板与发送逻辑）。同一会话按新闻标题归属，点另一条快讯会重建会话，不复用上一条的追问上下文。卡片另带自选关联静默标记：标题/摘要命中快照中的自选名称时，paintComponent 在时间胶囊右侧画主题蓝小圆点，tooltip 显示命中的自选名称；快照更新时 `refreshCardMarks` 重算已有卡片，无任何弹窗通知。
 
 ## 行情模块
 
@@ -66,7 +69,14 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 - 顶部市场筛选标签（A股/港股/美股/黄金）：切换时过滤自选 codes、替换底部大盘指数组并恢复该市场的选中项、重置倒计时刷新。
 - 底部大盘指数：每组固定代码清单（上证指数等/恒指恒科/道纳标普/四只贵金属），与自选合并成一次行情请求拉回后拆分显示，涨跌沿用 A 股配色（涨红跌绿，深浅主题双色适配）。
 - 刷新流程 `refreshQuotes(force)`：闭市时只置“闭市中”；开市则起后台线程请求，失败重试最多 3 次（间隔 1.5s），成功后 invokeLater 更新表格/指数/状态栏；`isRefreshing` 防重入，10 秒轮询间隔由倒计时控制。
-- 各市场开市判断：`isAShareOpen` / `isHKOpen` / `isUSOpen` / `isGoldOpen`。港股、美股显式指定时区；黄金按伦敦夏令时/冬令时区分开收盘时间并计入每日结算休市窗；均不处理法定节假日（已知简化）。
+- 各市场开市判断委托共享的 `MarketHours.isOpen`（A股/港股/美股/黄金）。A 股、港股、美股显式指定时区；黄金按伦敦夏令时/冬令时区分开收盘时间并计入每日结算休市窗；均不处理法定节假日（已知简化）。
+- 右键菜单除「删除选中」外另有「异动阈值…」：单只或多选批量设置个股异动阈值（%），留空恢复默认；阈值经 `AbnormalThresholds` 按规范化自选代码存应用级配置（表格内是行情源展示码，需 `storedCodeFor` 映射回存储码），保存后调 `MarketMonitorService.refreshNow()` 立即重算；删除自选时同步清除对应阈值键。
+
+### 状态栏隐蔽行情（MarketMonitorService / MarketStatusBarWidgetFactory）
+
+- **MarketMonitorService**（applicationService）：应用级只读快照 `Snapshot`（自选行情、异动清单及同序阈值、A 股三大指数、闭市标志）。首个订阅者启动轮询：`AppExecutorUtil` 共享调度器 60 秒触发一次，实际请求派发到应用线程池执行，`inFlight` 防重入；开市 60 秒 / 全闭市 5 分钟低频维护（`refreshNow` 可跳过闭市间隔）。自选代码 + 上证指数/深证成指/创业板指合并为一次 `fetchQuotes` 批量请求；异动判定按个股阈值（`AbnormalThresholds.get`，默认 3%）。快照更新经 `invokeLater` 通知订阅者（状态栏 widget、KuaixunPanel 卡片标记）。
+- **MarketStatusBarWidgetFactory**：IconPresentation widget，常态仅显示工具窗口同款灰色折线图标（13px，无红绿、形似性能监控 sparkline）；`getClickConsumer` 返回 null——无点击行为，误点不暴露行情窗口；全部明细在悬停 tooltip 的三列单行网格：「大盘」标题行（休市标记居右）+ 指数逐行 + 自选异动逐行（名称左、阈值灰字右对齐中列、涨跌幅右列；自选行与大盘行同高），异动红涨在前、绿跌在后，组内按幅度降序。排版硬约束：单元格包 `nobr`（IDE 会先以窄宽度布局 tooltip，可断行单元格被压成逐字换行）；不用 colspan（跨列长行的偏好宽度会把表格撑宽，超屏幕可用宽度后右列遭裁切）；不用 valign（JBR17 的 Swing 表格使 valign 单元格内容整体消失）。不产生任何系统通知；用户可经状态栏右键菜单隐藏 widget。扩展点声明 `order="last"` 把 widget 钉在状态栏最右端：开闭文件引起编辑器 widget（行号/编码/缩进等）增减时图标位置恒定，否则会被挤进编辑器 widget 区、形似平台小图而被误认为消失。
+- 设计约束（产品硬要求）：面向 IDE 内隐蔽看盘场景，禁止主动提醒、禁止状态栏出现金融字样、禁止点击弹出行情窗口；信息只做静默被动呈现。
 
 ## AI 模块
 
@@ -120,6 +130,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 | 快讯页面加载 / 自选行情刷新 | 裸 `new Thread`（后者带 3 次重试） |
 | 快讯自动检查新增 | SwingWorker |
 | 均线批量拉取 | QuoteService.MA_EXECUTOR，固定 4 daemon 线程 |
+| 状态栏快照轮询 | AppExecutorUtil 共享调度器触发 + 应用线程池执行，inFlight 防重入 |
 | AI 请求（分析/追问/Key 加载） | AIService.SHARED_EXECUTOR，固定 4 daemon 线程，CompletableFuture 回调 |
 | 对话框异步回填 / 测试连接 | 裸 `new Thread` |
 
@@ -127,7 +138,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 
 ## 持久化键清单
 
-应用级 PropertiesComponent（全局共享，同一 IDE 的所有项目共用一份；键名常量在 `WatchlistPanel`）：
+应用级 PropertiesComponent（全局共享，同一 IDE 的所有项目共用一份；键名常量在 `WatchlistPanel` 与 `AbnormalThresholds`）：
 
 | 键 | 内容 |
 |----|------|
@@ -135,6 +146,7 @@ KuaixunPanel 在 tab 切换监听里互斥启停两个面板各自的刷新计�
 | `eastmoney.7x24.watchlist.sortColumn` / `.sortState` | 三态排序状态 |
 | `eastmoney.7x24.watchlist.marketFilter` | 当前市场筛选标签 |
 | `eastmoney.7x24.watchlist.index.<MARKET>` | 各市场的大盘指数选中序号 |
+| `eastmoney.7x24.watchlist.abnormal.<code>` | 个股异动阈值（%），未设置走默认 3%；删除自选时清除 |
 
 迁移：2.1.0 及之前这些键存在项目级配置（各项目一份，互不相通）。升级后 `WatchlistPanel` 构造时执行 `migrateProjectScopedSettings`，把当前项目的旧值补种到应用级——仅当应用级从未写入过该键时才补种，因此用户在应用级已做的修改或清空不会被其他项目的旧数据覆盖。
 
@@ -146,7 +158,7 @@ PasswordSafe：子系统 `Finance7x24AI`，按配置凭据槽 `profile:<id>` 各
 
 ## 已知限制与技术债
 
-- 所有市场开市判断均不含法定节假日；`isAShareOpen` 使用系统默认时区而非显式 Asia/Shanghai（其余市场均已显式指定），非东八区机器上判断会偏差。
+- 所有市场开市判断均不含法定节假日（`MarketHours`，自选页与状态栏快照共用；各市场均已显式指定时区）。
 - 网络请求散布多处裸 Thread，未复用共享线程池；每次分析新建 `QuoteService` 实例。
 - 状态栏文案依赖 `contains("下次刷新")` 字符串判断再拼接，各状态文案互相耦合。
 - 删除自选用 `endsWith` 尾号匹配，理论上有撞码边界。

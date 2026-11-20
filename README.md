@@ -23,6 +23,9 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 - **多份 AI 服务配置**：可保存多份独立的接口地址 / 模型 ID / API Key，随时切换；内置常用服务预设模板，也支持任意 OpenAI 兼容接口
 - 工具窗口标题栏常驻「AI速览」「AI选股分析」「AI 设置」快捷入口，快讯 / 自选任意页签下都能一键直达
 - AI 会话作为工具窗口内的页签打开，不再弹独立窗口：可随工具窗口最小化/隐藏，页签带关闭按钮，会话期间切走再点入口即可恢复
+- **状态栏隐蔽行情**：IDE 底部状态栏常态仅一枚灰色折线小图标，悬停展示 A 股大盘与自选异动明细；无点击行为、不弹通知，可在状态栏右键菜单隐藏
+- **个股异动阈值**：自选右键「异动阈值…」为单只或多只自选设置异动阈值（%），留空恢复默认 3%
+- **自选关联快讯标记**：快讯命中自选名称时卡片带小蓝点，悬停显示关联自选，不弹窗打扰
 
 ## AI 功能
 
@@ -102,6 +105,8 @@ Finance 7x24 News 是一个 IntelliJ IDEA 工具窗口插件，用于在 IDE 内
 ├── AISettingsPanel             # 设置表单（配置列表 + 编辑 + 测试连接），设置页与对话框共用
 ├── AISettingsDialog/Configurable  # 设置对话框 / IDE 设置页
 ├── AiQuickActions / ShowAiSettingsAction  # 工具窗口标题栏快捷入口
+├── MarketMonitorService / MarketStatusBarWidgetFactory  # 状态栏隐蔽行情：低频快照 + 图标/悬停明细
+├── MarketHours / AbnormalThresholds  # 各市场开市时段共享判断 / 个股异动阈值
 └── 其余为模型类与工具类          # QuoteItem / KuaixunItem / MarketType / CodeUtils / GoldInstrument
 ```
 

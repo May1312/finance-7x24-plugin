@@ -44,6 +44,8 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
     private volatile List<KuaixunItem> latestItems = new ArrayList<>();
     private long countdownSeconds = REFRESH_INTERVAL_MS / COUNTDOWN_STEP_MS;
     private boolean isRefreshing = false;
+    /** 行情快照更新时重算已有卡片的自选关联标记（回调在 EDT） */
+    private final Runnable marketListener = this::refreshCardMarks;
 
     private static final int REFRESH_INTERVAL_MS = 20000;
     private static final int COUNTDOWN_STEP_MS = 1000;
@@ -128,6 +130,7 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
     @Override
     public void removeNotify() {
         autoRefreshTimer.stop();
+        MarketMonitorService.getInstance().removeListener(marketListener);
         super.removeNotify();
     }
 
@@ -138,6 +141,7 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
         if (tabs.getSelectedComponent() == newsPanel && !autoRefreshTimer.isRunning()) {
             autoRefreshTimer.start();
         }
+        MarketMonitorService.getInstance().addListener(marketListener);
         refreshData();
     }
 
@@ -485,7 +489,21 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
     }
 
     private JPanel createCard(KuaixunItem item) {
-        return new NewsCard(item, () -> watchlistPanel.openNewsInterpretation(item.getTitle(), item.getDigest()));
+        NewsCard card = new NewsCard(item, () -> watchlistPanel.openNewsInterpretation(item.getTitle(), item.getDigest()));
+        card.setRelated(MarketMonitorService.getInstance().getSnapshot()
+                .relatedNames(item.getTitle(), item.getDigest()));
+        return card;
+    }
+
+    /** 行情快照到达/更新后，重算所有已展示卡片的自选关联标记 */
+    private void refreshCardMarks() {
+        MarketMonitorService.Snapshot snapshot = MarketMonitorService.getInstance().getSnapshot();
+        for (Component c : cardsPanel.getComponents()) {
+            if (c instanceof NewsCard card) {
+                KuaixunItem item = card.getItem();
+                card.setRelated(snapshot.relatedNames(item.getTitle(), item.getDigest()));
+            }
+        }
     }
 
     /**
@@ -504,8 +522,16 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
         private static final Color TIME_FG = new JBColor(
                 new Color(0x86909C),
                 new Color(0xC9CDD4));
+        /** 自选关联标记：IDE 主题蓝小圆点，刻意不用红绿行情色，余光里不显眼 */
+        private static final Color RELATED_DOT = new JBColor(
+                new Color(0x3574F0),
+                new Color(0x548AF7));
 
         private final String itemId;
+        private final KuaixunItem item;
+        private final JTextArea titleArea;
+        private JTextArea digestArea;
+        private List<String> relatedNames = List.of();
         private boolean hovered = false;
         private float alpha = 1.0f; // 透明度，用于刷新动画
 
@@ -513,6 +539,7 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
 
         private NewsCard(KuaixunItem item, Runnable aiInterpretAction) {
             this.itemId = item.getId();
+            this.item = item;
             this.timeText = item.getDisplayTimeText();
             setOpaque(false);
             setLayout(new BorderLayout());
@@ -550,7 +577,7 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
             content.setBorder(BorderFactory.createEmptyBorder(
                     JBUI.scale(2), cardPad, bottomPad, cardPad));
 
-            JTextArea titleArea = new JTextArea(title);
+            titleArea = new JTextArea(title);
             titleArea.setFont(JBFont.label().asBold().deriveFont(JBFont.label().getSize() + 1.0f));
             titleArea.setForeground(TITLE_COLOR);
             titleArea.setOpaque(false);
@@ -565,7 +592,7 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
             content.add(titleArea);
 
             if (hasDigest) {
-                JTextArea digestArea = new JTextArea(digest);
+                digestArea = new JTextArea(digest);
                 digestArea.setFont(JBFont.label().deriveFont(Font.PLAIN));
                 digestArea.setForeground(DIGEST_COLOR);
                 digestArea.setOpaque(false);
@@ -595,6 +622,20 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
 
         String getItemId() { return itemId; }
 
+        KuaixunItem getItem() { return item; }
+
+        /** 设置自选关联标记；tooltip 同步到正文子组件，否则鼠标停在文字上时不会触发 */
+        void setRelated(List<String> names) {
+            this.relatedNames = names == null ? List.of() : names;
+            String tip = relatedNames.isEmpty() ? null : "关联自选：" + String.join("、", relatedNames);
+            setToolTipText(tip);
+            titleArea.setToolTipText(tip);
+            if (digestArea != null) {
+                digestArea.setToolTipText(tip);
+            }
+            repaint();
+        }
+
         void setFading(boolean fading) {
             this.alpha = fading ? 0.3f : 1.0f;
         }
@@ -620,20 +661,31 @@ public class KuaixunPanel extends JPanel implements AiSessionHost {
             g2.drawRoundRect(x, y, w - 1, h - 1, arc, arc);
 
             // time pill
+            int pillX = x + JBUI.scale(12);
+            int pillY = y + JBUI.scale(10);
+            int pillW = 0;
+            int pillH = 0;
             if (timeText != null && !timeText.isEmpty()) {
                 Font pillFont = JBFont.small().deriveFont(Font.PLAIN, JBUI.scaleFontSize(11f));
                 g2.setFont(pillFont);
                 FontMetrics fm = g2.getFontMetrics();
-                int pillH = fm.getHeight() + JBUI.scale(4);
-                int pillW = fm.stringWidth(timeText) + JBUI.scale(12);
-                int pillX = x + JBUI.scale(12);
-                int pillY = y + JBUI.scale(10);
+                pillH = fm.getHeight() + JBUI.scale(4);
+                pillW = fm.stringWidth(timeText) + JBUI.scale(12);
                 int pillArc = JBUI.scale(4);
 
                 g2.setColor(TIME_BG);
                 g2.fillRoundRect(pillX, pillY, pillW, pillH, pillArc, pillArc);
                 g2.setColor(TIME_FG);
                 g2.drawString(timeText, pillX + JBUI.scale(6), pillY + fm.getAscent() + JBUI.scale(2));
+            }
+
+            // 自选关联小圆点：紧跟时间胶囊右侧，悬停 tooltip 可见命中的自选
+            if (!relatedNames.isEmpty()) {
+                int d = JBUI.scale(6);
+                int dotX = pillX + pillW + JBUI.scale(8);
+                int dotY = pillH > 0 ? pillY + (pillH - d) / 2 : pillY + JBUI.scale(2);
+                g2.setColor(RELATED_DOT);
+                g2.fillOval(dotX, dotY, d, d);
             }
 
             g2.dispose();

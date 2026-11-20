@@ -19,11 +19,7 @@ import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.text.Collator;
-import java.time.DayOfWeek;
-import java.time.LocalDate;
 import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -439,11 +435,76 @@ public class WatchlistPanel extends JPanel {
         }
 
         List<String> codes = parseCodes();
+        List<String> before = new ArrayList<>(codes);
         codes.removeIf(c -> codesToRemove.stream()
                 .anyMatch(ctr -> c.toLowerCase().endsWith(ctr.toLowerCase())));
         saveCodes(codes);
+        for (String code : before) {
+            if (!codes.contains(code)) {
+                AbnormalThresholds.set(code, null);
+            }
+        }
         statusLabel.setText("已删除 " + codesToRemove.size() + " 只");
         refreshQuotes(true);
+    }
+
+    /** 右键为选中自选设置个股异动阈值（%），留空恢复默认；支持多选批量设置 */
+    private void showThresholdDialog() {
+        int[] rows = quoteTable.getSelectedRows();
+        if (rows.length == 0) return;
+        List<String> storedCodes = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (int row : rows) {
+            Object v = tableModel.getValueAt(quoteTable.convertRowIndexToModel(row), 0);
+            if (v instanceof QuoteItem) {
+                QuoteItem item = (QuoteItem) v;
+                String stored = storedCodeFor(item);
+                if (stored != null) {
+                    storedCodes.add(stored);
+                    names.add(item.getName());
+                }
+            }
+        }
+        if (storedCodes.isEmpty()) return;
+
+        Double current = AbnormalThresholds.getSetting(storedCodes.get(0));
+        String target = storedCodes.size() == 1
+                ? "「" + names.get(0) + "」"
+                : "选中的 " + storedCodes.size() + " 只自选";
+        String input = (String) JOptionPane.showInputDialog(this,
+                "为" + target + "设置异动阈值（%）：\n当日 |涨跌幅| 达到该值计为异动；留空恢复默认 "
+                        + String.format("%.0f", AbnormalThresholds.DEFAULT) + "%。",
+                "异动阈值", JOptionPane.PLAIN_MESSAGE, null, null,
+                current == null ? "" : String.valueOf(current));
+        if (input == null) return;
+        input = input.trim();
+        Double value = null;
+        if (!input.isEmpty()) {
+            try {
+                value = Double.parseDouble(input);
+            } catch (NumberFormatException ignored) {}
+            if (value == null || value <= 0 || value > 100) {
+                JOptionPane.showMessageDialog(this, "阈值需为 0-100 之间的数字，例如 3 或 1.5",
+                        "提示", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+        }
+        for (String code : storedCodes) {
+            AbnormalThresholds.set(code, value);
+        }
+        MarketMonitorService.getInstance().refreshNow();
+        statusLabel.setText(value == null ? "已恢复默认异动阈值" : "异动阈值已设为 " + input + "%");
+    }
+
+    /** 表格内是行情源展示码（裸码/大写），映射回自选存储的规范化代码 */
+    private String storedCodeFor(QuoteItem item) {
+        String display = CodeUtils.stripPrefix(item.getCode());
+        for (String code : parseCodes()) {
+            if (CodeUtils.stripPrefix(code).equalsIgnoreCase(display)) {
+                return code;
+            }
+        }
+        return null;
     }
 
     private void installPopupMenu() {
@@ -451,6 +512,9 @@ public class WatchlistPanel extends JPanel {
         JMenuItem deleteItem = new JMenuItem("删除选中");
         deleteItem.addActionListener(e -> deleteSelected());
         popup.add(deleteItem);
+        JMenuItem thresholdItem = new JMenuItem("异动阈值…");
+        thresholdItem.addActionListener(e -> showThresholdDialog());
+        popup.add(thresholdItem);
 
         quoteTable.addMouseListener(new MouseAdapter() {
             @Override
@@ -598,55 +662,7 @@ public class WatchlistPanel extends JPanel {
     }
 
     private boolean isMarketOpen(MarketType market) {
-        return switch (market) {
-            case A -> isAShareOpen();
-            case HK -> isHKOpen();
-            case US -> isUSOpen();
-            case GOLD -> isGoldOpen();
-        };
-    }
-
-    private boolean isAShareOpen() {
-        DayOfWeek dow = LocalDate.now().getDayOfWeek();
-        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) return false;
-        LocalTime now = LocalTime.now();
-        boolean morning = !now.isBefore(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(11, 30));
-        boolean afternoon = !now.isBefore(LocalTime.of(13, 0)) && now.isBefore(LocalTime.of(15, 0));
-        return morning || afternoon;
-    }
-
-    private boolean isHKOpen() {
-        ZoneId hk = ZoneId.of("Asia/Hong_Kong");
-        DayOfWeek dow = LocalDate.now(hk).getDayOfWeek();
-        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) return false;
-        LocalTime now = LocalTime.now(hk);
-        boolean morning = !now.isBefore(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(12, 0));
-        boolean afternoon = !now.isBefore(LocalTime.of(13, 0)) && now.isBefore(LocalTime.of(16, 0));
-        return morning || afternoon;
-    }
-
-    private boolean isUSOpen() {
-        ZoneId ny = ZoneId.of("America/New_York");
-        ZonedDateTime now = ZonedDateTime.now(ny);
-        if (now.getDayOfWeek() == DayOfWeek.SATURDAY || now.getDayOfWeek() == DayOfWeek.SUNDAY) return false;
-        LocalTime t = now.toLocalTime();
-        return !t.isBefore(LocalTime.of(9, 30)) && t.isBefore(LocalTime.of(16, 0));
-    }
-
-    private boolean isGoldOpen() {
-        ZoneId sh = ZoneId.of("Asia/Shanghai");
-        ZoneId london = ZoneId.of("Europe/London");
-        ZonedDateTime now = ZonedDateTime.now(sh);
-        DayOfWeek dow = now.getDayOfWeek();
-        LocalTime t = now.toLocalTime();
-        boolean dst = london.getRules().isDaylightSavings(now.toInstant());
-        LocalTime open = dst ? LocalTime.of(6, 0) : LocalTime.of(7, 0);
-        LocalTime close = dst ? LocalTime.of(5, 0) : LocalTime.of(6, 0);
-
-        if (dow == DayOfWeek.SUNDAY) return false;
-        if (dow == DayOfWeek.SATURDAY) return t.isBefore(close);
-        if (dow == DayOfWeek.MONDAY) return !t.isBefore(open);
-        return !t.isBefore(open) || t.isBefore(close);
+        return MarketHours.isOpen(market);
     }
 
     private void updateTable(List<QuoteItem> items) {
